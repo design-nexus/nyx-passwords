@@ -69,6 +69,16 @@ impl Scratch {
         }
     }
 
+    /// Stops the daemon and starts it again, as an update does.
+    fn restart(&mut self) {
+        // SAFETY: signalling our own child's process group.
+        unsafe { libc::kill(-(self.daemon.id() as i32), libc::SIGTERM) };
+        let _ = self.daemon.wait();
+        let _ = std::fs::remove_file(self.socket());
+        self.daemon = spawn_daemon(self.dir.path(), false, None);
+        self.wait_for_socket();
+    }
+
     fn socket(&self) -> PathBuf {
         self.dir.path().join("run/nyx-passwords/bus")
     }
@@ -886,21 +896,26 @@ impl Scratch {
     /// Runs the `browser` role as a program called `firefox`, so the bridge it starts has a
     /// browser for a parent. `step` is "hello" or a JSON list of requests.
     fn as_browser(&self, step: &str) -> Vec<Value> {
-        let out = Command::new(self.dir.path().join("bin/firefox"))
-            .args(["--exact", "browser", "--ignored", "--nocapture", "--test-threads=1"])
+        browser_results(&self.browser(step).output().unwrap())
+    }
+
+    fn browser(&self, step: &str) -> Command {
+        let mut c = Command::new(self.dir.path().join("bin/firefox"));
+        c.args(["--exact", "browser", "--ignored", "--nocapture", "--test-threads=1"])
             .env("NYX_PW_BROWSER_STEP", step)
             .env("NYX_PW_BROWSER_STATE", self.dir.path().join("extension.json"))
             // The scratch session's daemon, never the real one.
             .env("XDG_RUNTIME_DIR", self.dir.path().join("run"))
             .env("XDG_CONFIG_HOME", self.dir.path().join("config"))
-            .env("HOME", self.dir.path())
-            .output()
-            .unwrap();
-        let text = String::from_utf8_lossy(&out.stdout);
-        let line =
-            text.lines().find_map(|l| l.split_once("RESULTS ").map(|(_, r)| r)).unwrap_or_else(|| panic!("browser: {text}"));
-        serde_json::from_str(line).unwrap()
+            .env("HOME", self.dir.path());
+        c
     }
+}
+
+fn browser_results(out: &std::process::Output) -> Vec<Value> {
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = text.lines().find_map(|l| l.split_once("RESULTS ").map(|(_, r)| r)).unwrap_or_else(|| panic!("browser: {text}"));
+    serde_json::from_str(line).unwrap()
 }
 
 fn b64(bytes: &[u8]) -> String {
@@ -943,7 +958,21 @@ fn browser() {
         serde_json::from_slice(&reply).unwrap()
     };
     let mut results = Vec::new();
-    if step == "hello" {
+    if step == "update" {
+        // A request, then (once the test has replaced the bridge's binary and restarted
+        // the daemon, as an install does) another, and which binary the bridge runs.
+        let hello = json!({"t": "hello", "v": 1, "pub": b64(&[9u8; 32])});
+        results.push(send(&hello));
+        std::fs::write(Path::new(&state_file).with_extension("ready"), "").unwrap();
+        let updated = Path::new(&state_file).with_extension("updated");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !updated.exists() {
+            assert!(Instant::now() < deadline, "no update");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        results.push(send(&hello));
+        results.push(json!(std::fs::read_link(format!("/proc/{}/exe", child.id())).unwrap()));
+    } else if step == "hello" {
         let secret = x25519_dalek::StaticSecret::random();
         let public = x25519_dalek::PublicKey::from(&secret);
         let reply = send(&json!({"t": "hello", "v": 1, "pub": b64(public.as_bytes())}));
@@ -1006,6 +1035,29 @@ fn browser() {
     drop(input);
     let _ = child.wait();
     println!("RESULTS {}", Value::Array(results));
+}
+
+/// An install replaces the bridge while the browser keeps it running, and restarts the
+/// daemon, which refuses a replaced binary: the bridge carries on as the new build,
+/// without the browser noticing.
+#[test]
+fn bridge_carries_on_after_an_update() {
+    let mut s = Scratch::start("");
+    let browser = s.browser("update").stdout(std::process::Stdio::piped()).spawn().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !s.dir.path().join("extension.ready").exists() {
+        assert!(Instant::now() < deadline, "the browser didn't start");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let bridge = s.dir.path().join("bin/nyx-passwords-bridge");
+    std::fs::copy(env!("CARGO_BIN_EXE_nyx-passwords-bridge"), bridge.with_extension("new")).unwrap();
+    std::fs::rename(bridge.with_extension("new"), &bridge).unwrap();
+    s.restart();
+    std::fs::write(s.dir.path().join("extension.updated"), "").unwrap();
+    let results = browser_results(&browser.wait_with_output().unwrap());
+    assert_ne!(results[0]["t"], "unavailable", "{results:?}");
+    assert_eq!(results[1]["t"], results[0]["t"], "{results:?}");
+    assert_eq!(results[2], json!(bridge));
 }
 
 #[test]
