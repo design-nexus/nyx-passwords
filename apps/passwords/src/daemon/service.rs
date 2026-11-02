@@ -356,6 +356,21 @@ impl Service {
         Ok(self.vault.set_keyring_unlock(self.scope, on).await?)
     }
 
+    /// Unlocks with the key sealed by Nyx Biometrics, after the person confirms it's them.
+    async fn unlock_with_face(&self) -> Result<(), Error> {
+        Ok(self.vault.unlock_with_face(self.scope).await?)
+    }
+
+    /// Whether unlocking with the face is set up.
+    async fn face_unlock(&self) -> Result<bool, Error> {
+        Ok(self.vault.face_unlock(self.scope).await?)
+    }
+
+    /// Turns unlocking with the face on (the vault must be unlocked) or off.
+    async fn set_face_unlock(&self, on: bool) -> Result<(), Error> {
+        Ok(self.vault.set_face_unlock(self.scope, on).await?)
+    }
+
     async fn trash(&self, id: String) -> Result<(), Error> {
         Ok(self.vault.trash(self.scope, &id, false).await?)
     }

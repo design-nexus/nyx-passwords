@@ -444,37 +444,17 @@ fn unlock_page(ui: &Ui) {
     let go = gtk::Button::with_label("Unlock");
     go.add_css_class("suggested-action");
     // Shown when a key is saved in the keyring (Settings, "Unlock with the keyring").
-    let keyring = gtk::Button::from_icon_name("changes-allow-symbolic");
-    keyring.set_tooltip_text(Some("Unlock with the key saved in your desktop keyring"));
-    keyring.set_visible(false);
-    card.append(&buttons(&[&sign_out, &keyring, &go]));
-    let k = keyring.clone();
-    glib::spawn_future_local(async move {
-        if let Ok(v) = client::call("KeyringUnlock", None).await {
-            k.set_visible(v.get::<(bool,)>().is_some_and(|(on,)| on));
-        }
-    });
-    let (u, e) = (ui.clone(), err.clone());
-    keyring.connect_clicked(move |b| {
-        b.set_sensitive(false);
-        show_error(&e, "");
-        let (ui, err, b) = (u.clone(), e.clone(), b.clone());
-        glib::spawn_future_local(async move {
-            let reply = client::call("UnlockWithKeyring", None).await;
-            b.set_sensitive(true);
-            match reply {
-                Ok(_) => {
-                    ui::set_state(&ui, state::UNLOCKED);
-                    ui::sync(&ui);
-                }
-                Err(e) if e.is(Code::LoggedOut) => ui::set_state(&ui, state::LOGGED_OUT),
-                Err(e) => {
-                    show_error(&err, &e.to_string());
-                    b.set_visible(false);
-                }
-            }
-        });
-    });
+    let keyring = quick_unlock(
+        ui,
+        &err,
+        "changes-allow-symbolic",
+        "Unlock with the key saved in your desktop keyring",
+        ("KeyringUnlock", "UnlockWithKeyring"),
+    );
+    // Shown when Nyx Biometrics seals the key (Settings, "Unlock with your face"). It asks
+    // the person to confirm it's them in the system prompt.
+    let face = quick_unlock(ui, &err, "camera-web-symbolic", "Unlock with your face", ("FaceUnlock", "UnlockWithFace"));
+    card.append(&buttons(&[&sign_out, &keyring, &face, &go]));
     let submit = {
         let (ui, password, err, go) = (ui.clone(), password.clone(), err.clone(), go.clone());
         move || {
@@ -627,4 +607,44 @@ pub fn confirm_for(ui: &Ui, why: &str, then: impl Fn() + 'static) {
 
 fn host(url: &str) -> String {
     url.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/').to_string()
+}
+
+/// A button that unlocks without the master password, shown only while the daemon says
+/// that way is set up (`status`), calling `unlock` when pressed.
+fn quick_unlock(ui: &Ui, err: &gtk::Label, icon: &str, tooltip: &str, methods: (&'static str, &'static str)) -> gtk::Button {
+    let (status, unlock) = methods;
+    let button = gtk::Button::from_icon_name(icon);
+    button.set_tooltip_text(Some(tooltip));
+    button.set_visible(false);
+    let b = button.clone();
+    glib::spawn_future_local(async move {
+        if let Ok(v) = client::call(status, None).await {
+            b.set_visible(v.get::<(bool,)>().is_some_and(|(on,)| on));
+        }
+    });
+    let (u, e) = (ui.clone(), err.clone());
+    button.connect_clicked(move |b| {
+        b.set_sensitive(false);
+        show_error(&e, "");
+        let (ui, err, b) = (u.clone(), e.clone(), b.clone());
+        glib::spawn_future_local(async move {
+            let reply = client::call(unlock, None).await;
+            b.set_sensitive(true);
+            match reply {
+                Ok(_) => {
+                    ui::set_state(&ui, state::UNLOCKED);
+                    ui::sync(&ui);
+                }
+                Err(e) if e.is(Code::LoggedOut) => ui::set_state(&ui, state::LOGGED_OUT),
+                Err(e) => {
+                    show_error(&err, &e.to_string());
+                    // A key that no longer fits was removed; a cancelled prompt leaves it.
+                    if let Ok(v) = client::call(status, None).await {
+                        b.set_visible(v.get::<(bool,)>().is_some_and(|(on,)| on));
+                    }
+                }
+            }
+        });
+    });
+    button
 }

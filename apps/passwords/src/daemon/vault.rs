@@ -24,6 +24,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use super::clipboard::Clipboard;
+use super::face_unlock;
 use super::notify::Notifier;
 use super::peer::Scope;
 use super::settings::{Settings, Watched};
@@ -615,6 +616,75 @@ impl Vault {
             .map_err(|e| Failure::new(Code::Failed, e.to_string()))
     }
 
+    /// Unlocks with the user key sealed by Nyx Biometrics, after the person confirms it's
+    /// them (face, fingerprint, security key or password, as the computer is set up).
+    pub async fn unlock_with_face(self: &Arc<Self>, scope: Scope) -> Result<()> {
+        need(scope, Scope::App)?;
+        let entry = {
+            let st = self.state.lock().await;
+            if st.session.is_some() {
+                return Ok(());
+            }
+            face_entry(&st).ok_or_else(|| Failure::new(Code::LoggedOut, "not signed in"))?
+        };
+        // The person may take a while to confirm; don't hold the vault while they do.
+        let (entry, saved) = tokio::task::spawn_blocking(move || {
+            let saved = entry.load();
+            (entry, saved)
+        })
+        .await
+        .map_err(|_| Failure::new(Code::Failed, "the key service couldn't be reached"))?;
+        let key = saved
+            .map_err(|e| Failure::new(Code::Failed, e))?
+            .ok_or_else(|| Failure::new(Code::Failed, "unlocking with your face isn't set up"))?;
+        {
+            let mut st = self.state.lock().await;
+            if st.session.is_some() {
+                return Ok(());
+            }
+            let session = match session::unlock_with_key(&mut st.store, &key) {
+                Ok(s) => s,
+                Err(SessionError::KeysChanged) => {
+                    let _ = tokio::task::spawn_blocking(move || entry.clear()).await;
+                    return Err(Failure::new(Code::Failed, "the saved key no longer fits: unlock with the master password"));
+                }
+                Err(e) => return Err(e.into()),
+            };
+            opened(&mut st, session).await;
+        }
+        self.sync_soon();
+        Ok(())
+    }
+
+    /// Whether unlocking with the face is set up for this account.
+    pub async fn face_unlock(&self, scope: Scope) -> Result<bool> {
+        need(scope, Scope::App)?;
+        let Some(entry) = face_entry(&*self.state.lock().await) else { return Ok(false) };
+        Ok(tokio::task::spawn_blocking(move || entry.exists()).await.ok().and_then(|r| r.ok()).unwrap_or(false))
+    }
+
+    /// Turns unlocking with the face on (sealing the user key with Nyx Biometrics, which
+    /// asks the person to confirm it's them; the master password must have been confirmed
+    /// just before, as for keyring unlock) or off.
+    pub async fn set_face_unlock(&self, scope: Scope, on: bool) -> Result<()> {
+        need(scope, Scope::App)?;
+        let st = self.state.lock().await;
+        if on && !st.confirmed.is_some_and(|t| t.elapsed() < REPROMPT_GRACE) {
+            return Err(Failure::new(Code::Reprompt, "confirm the master password first"));
+        }
+        let entry = face_entry(&st).ok_or_else(|| Failure::new(Code::LoggedOut, "not signed in"))?;
+        let done = if on {
+            let key = st.session.as_ref().ok_or_else(locked)?.keys.export_user_key().map_err(SessionError::from)?;
+            drop(st);
+            tokio::task::spawn_blocking(move || entry.store(&key)).await
+        } else {
+            drop(st);
+            tokio::task::spawn_blocking(move || entry.clear()).await
+        };
+        done.map_err(|_| Failure::new(Code::Failed, "the key service couldn't be reached"))?
+            .map_err(|e| Failure::new(Code::Failed, e))
+    }
+
     fn sync_soon(self: &Arc<Self>) {
         let me = self.clone();
         tokio::spawn(async move {
@@ -668,6 +738,9 @@ impl Vault {
             {
                 // A key saved for unlocking is stale now too.
                 tokio::task::spawn_blocking(move || entry.clear_unlock_key());
+                if let Some(face) = face_entry(st) {
+                    tokio::task::spawn_blocking(move || face.clear());
+                }
             }
             applied?;
             st.revision += 1;
@@ -702,9 +775,13 @@ impl Vault {
         self.lock().await;
         let mut st = self.state.lock().await;
         if let Some(account) = st.store.account().ok().flatten() {
+            let face = face_unlock::Entry::new(&account.server, &account.email);
             let entry = keyring::Entry { server: account.server, email: account.email };
             let _ = tokio::task::spawn_blocking(move || {
                 let _ = entry.clear_unlock_key();
+                if face_unlock::Entry::available() {
+                    let _ = face.clear();
+                }
                 entry.clear()
             })
             .await;
@@ -1445,6 +1522,11 @@ async fn opened(st: &mut State, session: Session) {
 
 /// The keyring entry for the signed-in account, from the local copy (so it works while
 /// locked).
+fn face_entry(st: &State) -> Option<face_unlock::Entry> {
+    let account = st.store.account().ok().flatten()?;
+    Some(face_unlock::Entry::new(&account.server, &account.email))
+}
+
 fn unlock_entry(st: &State) -> Option<keyring::Entry> {
     let account = st.store.account().ok().flatten()?;
     Some(keyring::Entry { server: account.server, email: account.email })

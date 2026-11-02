@@ -7,13 +7,13 @@ mod data;
 mod detail;
 mod editor;
 mod emergency;
+#[cfg(debug_assertions)]
+pub mod fixture;
 mod icons;
 mod pairing;
 pub mod prefs;
 mod security;
 mod settings;
-#[cfg(debug_assertions)]
-pub mod fixture;
 mod theme;
 mod transfer;
 pub mod ui;

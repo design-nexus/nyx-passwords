@@ -4,6 +4,7 @@
 mod browser;
 mod clipboard;
 mod extension;
+mod face_unlock;
 pub use extension::theme as extension_theme;
 mod icons;
 mod notify;

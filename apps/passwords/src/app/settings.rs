@@ -193,22 +193,23 @@ fn username_rows(ui: &Ui, g: &gtk::Box, r: &nyx_passwords_core::alias::UsernameR
     });
 }
 
-/// "Unlock with the keyring". Not a preference: the daemon saves the vault's key in the
-/// desktop keyring or removes it, and the switch shows which is the case.
-fn keyring_row(ui: &Ui) -> gtk::Box {
-    let (row, sw) = w::switch_row(
-        "Unlock with the keyring",
-        "Keep the vault's key in your desktop keyring, which opens when you log in, and unlock without the master password. \
-         Anyone using your session, and any program running as you, can then open the vault too: leave it off on shared \
-         or unattended computers.",
-        false,
-        |_| {},
-    );
+/// A quick-unlock switch. Not a preference: the daemon saves the vault's key (in the
+/// desktop keyring, or sealed by Nyx Biometrics) or removes it, and the switch shows which
+/// is the case.
+fn unlock_switch(
+    ui: &Ui,
+    title: &str,
+    desc: &str,
+    methods: (&'static str, &'static str),
+    done: (&'static str, &'static str),
+) -> gtk::Box {
+    let (get, set) = methods;
+    let (row, sw) = w::switch_row(title, desc, false, |_| {});
     // Set while the switch is moved from here rather than by the user.
     let quiet = Rc::new(Cell::new(true));
     let (s, q) = (sw.clone(), quiet.clone());
     glib::spawn_future_local(async move {
-        let on = client::call("KeyringUnlock", None).await.ok().and_then(|v| v.get::<(bool,)>()).is_some_and(|(on,)| on);
+        let on = client::call(get, None).await.ok().and_then(|v| v.get::<(bool,)>()).is_some_and(|(on,)| on);
         s.set_active(on);
         q.set(false);
     });
@@ -219,10 +220,8 @@ fn keyring_row(ui: &Ui) -> gtk::Box {
         }
         let (ui, s, quiet, on) = (u.clone(), s.clone(), quiet.clone(), s.is_active());
         glib::spawn_future_local(async move {
-            match client::call("SetKeyringUnlock", Some((on,).to_variant())).await {
-                Ok(_) => {
-                    ui::toast(&ui, if on { "The keyring can unlock the vault now." } else { "The key is gone from the keyring." })
-                }
+            match client::call(set, Some((on,).to_variant())).await {
+                Ok(_) => ui::toast(&ui, if on { done.0 } else { done.1 }),
                 Err(e) => {
                     quiet.set(true);
                     s.set_active(!on);
@@ -238,6 +237,33 @@ fn keyring_row(ui: &Ui) -> gtk::Box {
         });
     });
     row
+}
+
+fn keyring_row(ui: &Ui) -> gtk::Box {
+    unlock_switch(
+        ui,
+        "Unlock with the keyring",
+        "Keep the vault's key in your desktop keyring, which opens when you log in, and unlock without the master password. \
+         Anyone using your session, and any program running as you, can then open the vault too: leave it off on shared \
+         or unattended computers.",
+        ("KeyringUnlock", "SetKeyringUnlock"),
+        ("The keyring can unlock the vault now.", "The key is gone from the keyring."),
+    )
+}
+
+/// Shown when Nyx Biometrics' key service is installed.
+fn face_row(ui: &Ui) -> Option<gtk::Box> {
+    std::path::Path::new(nyx_auth_proto::keyd::SOCKET).exists().then(|| {
+        unlock_switch(
+            ui,
+            "Unlock with your face",
+            "Seal the vault's key with this computer's TPM. Unlocking then asks you to confirm it's you, with your face, \
+             fingerprint, security key or password as Sign-in & Security is set up. The key never sits in your session, \
+             and the master password always works too.",
+            ("FaceUnlock", "SetFaceUnlock"),
+            ("Your face can unlock the vault now.", "Unlocking with your face is off."),
+        )
+    })
 }
 
 pub fn open(ui: &Ui) {
@@ -275,6 +301,9 @@ pub fn open(ui: &Ui) {
     switch(&g, "Lock on sleep", "Lock the vault before the computer suspends.", v.lock_on_sleep, |p, x| {
         p.vault.lock_on_sleep = x
     });
+    if let Some(face) = face_row(ui) {
+        g.append(&face);
+    }
     g.append(&keyring_row(ui));
     choice(
         &g,

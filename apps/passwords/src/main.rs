@@ -1,7 +1,7 @@
 //! Nyx Passwords: the window. The vault itself lives in `nyx-passwordsd`.
 
-mod dialog_dismissal;
 mod app;
+mod dialog_dismissal;
 
 use gtk::{gio, glib, prelude::*};
 
@@ -18,10 +18,7 @@ fn main() -> glib::ExitCode {
     }
     // NYX_PASSWORDS_APP_ID runs a test copy beside the real one (its own window class).
     let id = std::env::var("NYX_PASSWORDS_APP_ID").unwrap_or_else(|_| "io.github.design_nexus.nyx.Passwords".into());
-    let app = gtk::Application::builder()
-        .application_id(id)
-        .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE)
-        .build();
+    let app = gtk::Application::builder().application_id(id).flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE).build();
     app.connect_command_line(|app, cl| {
         let argv: Vec<String> = cl.arguments().iter().map(|s| s.to_string_lossy().into_owned()).collect();
         let section = argv.iter().position(|s| s == "--section").and_then(|i| argv.get(i + 1)).cloned();
