@@ -24,7 +24,7 @@ jobs:
         run: |
           source <(sed -n '/^app_info()/,/^}/p' install.sh)
           app_info passwords
-          bash tools/ci-bootstrap.sh $deps
+          bash tools/ci-bootstrap.sh $deps cargo-deny
       - name: Locked build, targeted tests and package
         run: python3 tools/ci.py
   browser-extension:

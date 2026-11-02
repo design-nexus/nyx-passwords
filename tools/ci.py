@@ -14,6 +14,10 @@ command = ['cargo', 'build', '--release', '--locked', '--manifest-path', spec['m
 for package in spec['packages']:
     command += ['-p', package]
 subprocess.run(command, cwd=root, check=True)
+subprocess.run(['cargo', 'clippy', '--locked', '--all-targets', '-p', 'nyx-passwords', '-p', 'nyx-passwords-core',
+                '-p', 'nyx-passwords-proto', '--', '-D', 'warnings'], cwd=root, check=True)
+# Licences, advisories, sources and bans; the policy is in apps/passwords/docs/SECURITY.md.
+subprocess.run(['cargo', 'deny', 'check'], cwd=root / 'crates/nyx-passwords-core', check=True)
 for command in spec['test_commands']:
     subprocess.run(command, cwd=root, check=True)
 subprocess.run(['python3', 'tools/package.py', '--no-build'], cwd=root, check=True)
