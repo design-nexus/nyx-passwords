@@ -142,7 +142,10 @@ fn finish(
 ) -> Result<Session> {
     if !same_account {
         store.clear()?;
+        store.set_travel(false)?;
     }
+    let mut sync = sync;
+    crate::travel::filter(store, &keys, &mut sync)?;
     let account = Account {
         server: server.url().to_string(),
         email,
@@ -295,7 +298,7 @@ impl Session {
 
     /// Takes a sync response fetched elsewhere (so a caller can fetch without holding the
     /// session) and replaces the local copy with it.
-    pub fn apply(&mut self, store: &mut Store, sync: Sync) -> Result<()> {
+    pub fn apply(&mut self, store: &mut Store, mut sync: Sync) -> Result<()> {
         let kdf = checked_kdf(&sync, self.account.kdf)?;
         if sync.profile.id != self.snapshot.profile.id {
             return Err(SessionError::KeysChanged);
@@ -306,6 +309,7 @@ impl Session {
             self.keys.add_private_key(private).map_err(|_| SessionError::KeysChanged)?;
         }
         add_organizations(&self.keys, &sync);
+        crate::travel::filter(store, &self.keys, &mut sync)?;
         store.replace_snapshot(&sync, kdf, now())?;
         self.account = store.account()?.ok_or(SessionError::SignedOut)?;
         self.view = View::build(&self.keys, &sync);

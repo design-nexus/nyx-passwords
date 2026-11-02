@@ -13,6 +13,7 @@ use nyx_ui::widgets as w;
 
 use super::client::{self, Fail};
 use super::data::{self, Entry};
+use super::templates::{self, Slot, Template};
 use super::ui::{self, Ui, clear, label};
 use super::{account, editor};
 
@@ -74,6 +75,16 @@ pub fn show(ui: &Ui) {
     if e.reprompt {
         name_line.append(&w::tag("Asks for master password", ""));
     }
+    let template = e.template.as_deref().and_then(templates::find);
+    if let Some(t) = &template {
+        name_line.append(&w::tag(&t.name, ""));
+    }
+    if e.travel {
+        name_line.append(&w::tag("Travel-sensitive", ""));
+    }
+    let label_for = |slot: Slot, plain: &'static str| -> String {
+        template.as_ref().and_then(|t| t.label_for(slot)).unwrap_or(plain).to_string()
+    };
     title.append(&name_line);
     title.append(&label(&describe(ui, &e), "dim"));
     header.append(&title);
@@ -132,20 +143,22 @@ pub fn show(ui: &Ui) {
         bar.append(&trash);
     }
     ui.details.append(&bar);
+    show_issues(ui, &e);
 
     if e.kind == "login" {
-        let rows = group(ui, "Login");
+        let rows = group(ui, template.as_ref().map_or("Login", |t| t.name.as_str()));
         if let Some(user) = &e.username {
             rows.append(&w::row(
                 user,
-                "Username",
+                &glib::markup_escape_text(&label_for(Slot::Username, "Username")),
                 Some(copy_button(ui, &e.id, "username", "Copy username (Ctrl+Shift+U)").upcast_ref()),
             ));
         }
+        let password = label_for(Slot::Password, "Password");
         if e.has_password && !e.view_password {
-            rows.append(&hidden_row("Password"));
+            rows.append(&hidden_row(&password));
         } else if e.has_password {
-            rows.append(&secret_row(ui, &e, "password", "Password", "Copy password (Ctrl+Shift+C)"));
+            rows.append(&secret_row(ui, &e, "password", &password, "Copy password (Ctrl+Shift+C)"));
         }
         if e.has_totp {
             rows.append(&code_row(ui, &e));
@@ -153,9 +166,12 @@ pub fn show(ui: &Ui) {
         if e.username.is_none() && !e.has_password && !e.has_totp {
             rows.append(&w::row("No username or password", "", None));
         }
-        if !e.uris.is_empty() {
-            let rows = group(ui, "Web addresses");
-            for uri in &e.uris {
+        let apps: Vec<&str> = e.uris.iter().filter_map(|u| nyx_passwords_core::matching::android_package(u)).collect();
+        let web: Vec<(usize, &String)> =
+            e.uris.iter().enumerate().filter(|(_, u)| nyx_passwords_core::matching::android_package(u).is_none()).collect();
+        if !web.is_empty() {
+            let rows = group(ui, &label_for(Slot::Uri, "Web addresses"));
+            for (i, uri) in web {
                 let actions = w::hbox(4);
                 let copy = w::bar_button("edit-copy-symbolic", "Copy address");
                 let (win, value) = (ui.window.clone(), uri.clone());
@@ -168,7 +184,21 @@ pub fn show(ui: &Ui) {
                     });
                     actions.append(&open);
                 }
-                rows.append(&w::row(uri, "", Some(actions.upcast_ref())));
+                let rule = e.uri_rules.get(i).copied().flatten().map_or("", rule_name);
+                rows.append(&w::row(uri, rule, Some(actions.upcast_ref())));
+            }
+        }
+        let alias = w::vbox(12);
+        alias.set_visible(false);
+        ui.details.append(&alias);
+        show_alias(ui, &e, &alias);
+        if !apps.is_empty() {
+            let rows = group(ui, "Android apps");
+            for package in apps {
+                let copy = w::bar_button("edit-copy-symbolic", "Copy package name");
+                let (win, value) = (ui.window.clone(), package.to_string());
+                copy.connect_clicked(move |_| win.clipboard().set_text(&value));
+                rows.append(&w::row(package, "Filled by Bitwarden Android", Some(copy.upcast_ref())));
             }
         }
     }
@@ -178,13 +208,20 @@ pub fn show(ui: &Ui) {
     let more = w::vbox(12);
     more.set_visible(false);
     ui.details.append(&more);
-    show_fields(ui, &e, &more);
+    show_fields(ui, &e, template.clone(), &more);
+    if e.kind == "ssh" && !e.deleted {
+        let agent = w::vbox(12);
+        agent.set_visible(false);
+        ui.details.append(&agent);
+        show_agent(ui, &e, &agent);
+    }
     let files = w::vbox(12);
     files.set_visible(false);
     ui.details.append(&files);
     super::attachments::show(ui, &e, &files);
-    let rows = group(ui, "Notes");
-    rows.append(&secret_row(ui, &e, "notes", "Notes", ""));
+    let notes = label_for(Slot::Notes, "Notes");
+    let rows = group(ui, &notes);
+    rows.append(&secret_row(ui, &e, "notes", &notes, ""));
     if e.kind == "login" {
         let passkeys = w::vbox(12);
         passkeys.set_visible(false);
@@ -197,6 +234,206 @@ pub fn show(ui: &Ui) {
         ui.details.append(&history);
         show_history(ui, &e, &history);
     }
+}
+
+/// Whether the SSH agent offers this key. Keys that ask for the master password, or
+/// whose organization hides them, can't be offered.
+fn show_agent(ui: &Ui, e: &Entry, into: &gtk::Box) {
+    let (ui, e, into) = (ui.clone(), e.clone(), into.clone());
+    let serial = ui.detail_serial.get();
+    glib::spawn_future_local(async move {
+        let Ok(json) = client::text("SshAgentKeys", None).await else { return };
+        let on: Vec<String> = serde_json::from_str(&json).unwrap_or_default();
+        if ui.detail_serial.get() != serial {
+            return;
+        }
+        let agent_on = super::prefs::get().vault.ssh_agent;
+        let usable = e.view_password && !e.reprompt;
+        into.set_visible(true);
+        into.append(&label("SSH AGENT", "group-title"));
+        let rows = w::vbox(0);
+        rows.add_css_class("group-list");
+        into.append(&rows);
+        let sw = gtk::Switch::new();
+        sw.set_active(on.contains(&e.id));
+        sw.set_valign(gtk::Align::Center);
+        sw.set_sensitive(usable);
+        let desc = if !usable {
+            "Keys that ask for the master password, or that their organization hides, aren't offered."
+        } else if agent_on {
+            "ssh and git can ask to use it; you approve each use."
+        } else {
+            "Turn on the SSH agent in Settings too."
+        };
+        let (u, id) = (ui.clone(), e.id.clone());
+        sw.connect_state_set(move |sw, wanted| {
+            let (u, id, sw) = (u.clone(), id.clone(), sw.clone());
+            glib::spawn_future_local(async move {
+                match client::call("SetSshAgentKey", Some((id.as_str(), wanted).to_variant())).await {
+                    Ok(_) => sw.set_state(wanted),
+                    Err(err) => {
+                        sw.set_active(!wanted);
+                        ui::toast(&u, &err.to_string());
+                    }
+                }
+            });
+            glib::Propagation::Stop
+        });
+        rows.append(&w::row("Use in the SSH agent", desc, Some(sw.upcast_ref())));
+    });
+}
+
+/// What the security report says about this item, each with what fixes it. A breach is
+/// a fact; the rest is advice, and says so.
+fn show_issues(ui: &Ui, e: &Entry) {
+    use super::security::Issue;
+    let issues = ui.security.borrow().issues(e);
+    if issues.is_empty() {
+        return;
+    }
+    let rows = group(ui, "Security");
+    let can_edit = e.editable && editor::KINDS.contains(&e.kind.as_str());
+    for issue in issues {
+        let actions = w::hbox(4);
+        let button = |label: &str, tip: &str| {
+            let b = gtk::Button::with_label(label);
+            b.set_tooltip_text(Some(tip));
+            b.set_valign(gtk::Align::Center);
+            actions.append(&b);
+            b
+        };
+        let (u, entry) = (ui.clone(), e.clone());
+        match &issue {
+            Issue::Exposed(_) | Issue::Reused(_) | Issue::Weak | Issue::Old(_) if can_edit && e.view_password => {
+                button("Change…", "Generate a new password in the editor; change it on the site too")
+                    .connect_clicked(move |_| editor::open_fix(&u, entry.clone(), editor::Fix::NewPassword));
+            }
+            Issue::NoTwoFactor(docs) => {
+                if let Some(docs) = docs.clone() {
+                    button("How to", "The site's page about turning on two-step login").connect_clicked(move |_| {
+                        let _ = gtk::gio::AppInfo::launch_default_for_uri(&docs, None::<&gtk::gio::AppLaunchContext>);
+                    });
+                }
+                if can_edit {
+                    let (u, entry) = (ui.clone(), e.clone());
+                    button("Add code…", "Save the site's one-time code key here once you've turned it on")
+                        .connect_clicked(move |_| editor::open_fix(&u, entry.clone(), editor::Fix::TotpKey));
+                }
+            }
+            Issue::InsecureAddress if can_edit => {
+                button("Use https…", "Change its http:// addresses to https:// in the editor")
+                    .connect_clicked(move |_| editor::open_fix(&u, entry.clone(), editor::Fix::Https));
+            }
+            Issue::Duplicate(others) => {
+                let others = others.clone();
+                button("Show", "Pick this login and the others, to compare or move them").connect_clicked(move |_| {
+                    let mut ids = vec![entry.id.clone()];
+                    ids.extend(others.iter().cloned());
+                    ui::show_several(&u, ids);
+                });
+            }
+            Issue::Missing(_) if can_edit => {
+                button("Edit…", "Fill it in").connect_clicked(move |_| editor::open(&u, Some(entry.clone())));
+            }
+            _ => {}
+        }
+        let kind = if issue.verified() { "Verified" } else { "Advice" };
+        rows.append(&w::row(&issue.text(), kind, Some(actions.upcast_ref())));
+    }
+}
+
+/// The email alias the login's username is: its service and, once that service's aliases
+/// have been looked at, whether it's on, with a switch to turn it off (after asking) or
+/// on. Nothing is asked of the service until "Check" is pressed.
+fn show_alias(ui: &Ui, e: &Entry, into: &gtk::Box) {
+    #[derive(serde::Deserialize)]
+    struct Linked {
+        service: String,
+        name: String,
+        id: String,
+        email: String,
+        enabled: Option<bool>,
+    }
+    let (ui, e, into) = (ui.clone(), e.clone(), into.clone());
+    let serial = ui.detail_serial.get();
+    glib::spawn_future_local(async move {
+        let Ok(json) = client::text("ItemAlias", Some((e.id.as_str(),).to_variant())).await else { return };
+        let Ok(Some(a)) = serde_json::from_str::<Option<Linked>>(&json) else { return };
+        if ui.detail_serial.get() != serial {
+            return;
+        }
+        clear(&into);
+        into.set_visible(true);
+        into.append(&label("EMAIL ALIAS", "group-title"));
+        let rows = w::vbox(0);
+        rows.add_css_class("group-list");
+        into.append(&rows);
+        let state = match a.enabled {
+            Some(true) => "Active",
+            Some(false) => "Off: mail to it doesn't reach you",
+            None => "Not checked",
+        };
+        let actions = w::hbox(4);
+        let copy = w::bar_button("edit-copy-symbolic", "Copy address");
+        let (win, email) = (ui.window.clone(), a.email.clone());
+        copy.connect_clicked(move |_| win.clipboard().set_text(&email));
+        actions.append(&copy);
+        match a.enabled {
+            Some(on) => {
+                let sw = gtk::Switch::new();
+                sw.set_active(on);
+                sw.set_valign(gtk::Align::Center);
+                sw.set_tooltip_text(Some("Receive mail at this alias"));
+                let (u, entry, service, id, email) = (ui.clone(), e.clone(), a.service.clone(), a.id.clone(), a.email.clone());
+                sw.connect_state_set(move |sw, wanted| {
+                    let (u, entry, service, id, email, sw) =
+                        (u.clone(), entry.clone(), service.clone(), id.clone(), email.clone(), sw.clone());
+                    glib::spawn_future_local(async move {
+                        if !wanted {
+                            let detail = format!("Mail sent to {email} will no longer reach you, including from this site.");
+                            if !ui::confirm(&u, "Turn this alias off?", &detail, "Turn off").await {
+                                sw.set_active(true);
+                                return;
+                            }
+                        }
+                        let args = (service.as_str(), id.as_str(), wanted).to_variant();
+                        match client::call("SetAliasEnabled", Some(args)).await {
+                            Ok(_) => {
+                                if u.selected.borrow().as_deref() == Some(entry.id.as_str()) {
+                                    show(&u);
+                                }
+                            }
+                            Err(err) => {
+                                sw.set_active(!wanted);
+                                ui::toast(&u, &err.to_string());
+                            }
+                        }
+                    });
+                    glib::Propagation::Stop
+                });
+                actions.append(&sw);
+            }
+            None => {
+                let check = gtk::Button::with_label("Check");
+                check.set_tooltip_text(Some(&format!("Ask {} whether this alias is on", a.name)));
+                let (u, entry, service) = (ui.clone(), e.clone(), a.service.clone());
+                check.connect_clicked(move |b| {
+                    b.set_sensitive(false);
+                    let (u, entry, service) = (u.clone(), entry.clone(), service.clone());
+                    glib::spawn_future_local(async move {
+                        match client::text("ListAliases", Some((service.as_str(),).to_variant())).await {
+                            Ok(_) if u.selected.borrow().as_deref() == Some(entry.id.as_str()) => show(&u),
+                            Ok(_) => {}
+                            Err(err) => ui::toast(&u, &err.to_string()),
+                        }
+                    });
+                });
+                actions.append(&check);
+            }
+        }
+        let row = w::row(&a.email, &glib::markup_escape_text(&format!("{} · {state}", a.name)), Some(actions.upcast_ref()));
+        rows.append(&row);
+    });
 }
 
 /// The login's passkeys: the site and account each signs in to, when it was made, and
@@ -426,7 +663,7 @@ pub(super) struct FieldRow {
     pub kind: i64,
 }
 
-fn show_fields(ui: &Ui, e: &Entry, into: &gtk::Box) {
+fn show_fields(ui: &Ui, e: &Entry, template: Option<Template>, into: &gtk::Box) {
     let (ui, e, into) = (ui.clone(), e.clone(), into.clone());
     let serial = ui.detail_serial.get();
     glib::spawn_future_local(async move {
@@ -435,11 +672,13 @@ fn show_fields(ui: &Ui, e: &Entry, into: &gtk::Box) {
         if ui.detail_serial.get() != serial {
             return;
         }
-        let (own, mut custom): (Vec<_>, Vec<_>) = list.into_iter().partition(|f| !f.name.starts_with("custom:"));
+        let (mut own, mut custom): (Vec<_>, Vec<_>) = list.into_iter().partition(|f| !f.name.starts_with("custom:"));
         // Passwords' own fields read as what they mean.
         let mut browser_lines = Vec::new();
         custom.retain(|f| {
             let line = match f.label.as_str() {
+                nyx_passwords_proto::custom::TEMPLATE | nyx_passwords_proto::custom::ALIAS if f.kind == 0 => return false,
+                nyx_passwords_proto::custom::TRAVEL if f.kind == 2 => return false,
                 nyx_passwords_proto::custom::SIGN_IN_WITH => {
                     let id = f.value.clone().unwrap_or_default();
                     let name =
@@ -455,7 +694,33 @@ fn show_fields(ui: &Ui, e: &Entry, into: &gtk::Box) {
             browser_lines.push(line);
             false
         });
-        for (title, fields) in [(data::kind_name(&e.kind), own), ("Custom fields", custom)] {
+        // A template's fields come first, under its name and labels, in its order.
+        let mut groups = Vec::new();
+        match &template {
+            Some(t) => {
+                for f in own.iter_mut() {
+                    if let Some(label) = t.label_for(Slot::Own(&f.name)) {
+                        f.label = label.to_string();
+                    }
+                }
+                let mut laid_out: Vec<FieldRow> = Vec::new();
+                for (label, kind) in t.custom_fields() {
+                    if let Some(at) = custom.iter().position(|f| f.label == label && f.kind == kind) {
+                        laid_out.push(custom.remove(at));
+                    }
+                }
+                // A login's group above already carries the template's name.
+                let title = if e.kind == "login" { "Details".to_string() } else { t.name.clone() };
+                laid_out.extend(own);
+                groups.push((title, laid_out));
+                groups.push(("Other fields".to_string(), custom));
+            }
+            None => {
+                groups.push((data::kind_name(&e.kind).to_string(), own));
+                groups.push(("Custom fields".to_string(), custom));
+            }
+        }
+        for (title, fields) in groups {
             if fields.is_empty() {
                 continue;
             }
@@ -880,6 +1145,19 @@ fn set_trashed(ui: &Ui, id: &str, trash: bool) {
             Err(e) => handle(&ui, e, || {}),
         }
     });
+}
+
+/// A match rule other than the default, under its address.
+fn rule_name(rule: i64) -> &'static str {
+    match rule {
+        0 => "Matches the base domain",
+        1 => "Matches the host",
+        2 => "Matches pages that start with it",
+        3 => "Matches this exact page",
+        4 => "Matches as a regular expression",
+        5 => "Never matched",
+        _ => "",
+    }
 }
 
 /// An address as something to open: http(s), with https assumed when there's no scheme.

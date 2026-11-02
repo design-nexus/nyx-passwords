@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, SystemTime};
 use nyx_passwords_core::api::{ApiError, MAX_ATTACHMENT, Server, TwoFactor, TwoFactorAnswer};
 use nyx_passwords_core::audit::{self, StrengthCache};
 use nyx_passwords_core::crypto::CryptoError;
-use nyx_passwords_core::edit::{CustomDraft, ItemDraft, LoginDraft, Place};
+use nyx_passwords_core::edit::{CustomDraft, ItemDraft, LoginDraft, Place, UriDraft};
 use nyx_passwords_core::generate;
 use nyx_passwords_core::keyring;
 use nyx_passwords_core::model::Kind;
@@ -128,6 +128,16 @@ pub(super) struct State {
     pub(super) browser: super::browser::Browser,
     /// Password strength per item and revision, for the security report. No passwords.
     pub(super) strength: StrengthCache,
+    /// 2fa.directory's list, once downloaded; dropped on lock.
+    pub(super) two_factor: Option<audit::TwoFactorSites>,
+    /// Requests waiting for the user's approval (`approvals.rs`); refused on lock.
+    pub(super) approvals: super::approvals::Approvals,
+    /// SSH keys allowed to sign for a program until the vault locks: (item, program).
+    pub(super) ssh_allowed: std::collections::HashSet<(Uuid, std::path::PathBuf)>,
+    /// Copies each app with a grant made in the last minute.
+    pub(super) app_copies: std::collections::HashMap<String, VecDeque<Instant>>,
+    /// Each email alias service's aliases as last listed, and when; dropped on lock.
+    pub(super) aliases: std::collections::HashMap<&'static str, (Instant, Vec<nyx_passwords_core::alias::Alias>)>,
 }
 
 pub struct Vault {
@@ -161,6 +171,11 @@ impl Vault {
                 grantor: None,
                 browser: Default::default(),
                 strength: StrengthCache::new(),
+                aliases: Default::default(),
+                two_factor: None,
+                approvals: Default::default(),
+                ssh_allowed: Default::default(),
+                app_copies: Default::default(),
             }),
             clipboard: Arc::new(StdMutex::new(Clipboard::default())),
             notifier,
@@ -263,9 +278,15 @@ impl Vault {
             let session = st.session.as_ref().ok_or_else(locked)?;
             let value = reveal(&session.keys, &session.snapshot, id, field)?;
             st.last_used = Instant::now();
-            st.recent.retain(|r| *r != id);
-            st.recent.push_front(id);
-            st.recent.truncate(RECENT);
+            used(&mut st, id);
+            let who = match scope {
+                Scope::Glimpse => Some("Glimpse"),
+                Scope::Assistant => Some("Nyx Assistant"),
+                _ => None,
+            };
+            if let Some(who) = who {
+                super::grants::record(&st, who, &format!("copy {}", field_name), Some(id), "done");
+            }
             let label = match field {
                 Field::Username => "Username",
                 Field::Password => "Password",
@@ -282,7 +303,10 @@ impl Vault {
     pub async fn generate(self: &Arc<Self>, scope: Scope) -> Result<u32> {
         let settings = {
             let mut st = self.state.lock().await;
-            allow_glimpse(scope, &mut st)?;
+            allow_finder(scope, &mut st)?;
+            if scope == Scope::Assistant && !within(&mut st.assistant_copies, GLIMPSE_COPIES_PER_MINUTE) {
+                return Err(Failure::new(Code::RateLimited, "too many copies; wait a minute"));
+            }
             st.settings.refresh().clone()
         };
         let value = generated(&settings, None)?;
@@ -348,6 +372,11 @@ impl Vault {
             }
             st.browser.lock();
             st.strength.clear();
+            st.recent.clear();
+            st.aliases.clear();
+            st.two_factor = None;
+            st.approvals.deny_all();
+            st.ssh_allowed.clear();
             st.session.take()
         };
         self.icons.forget().await;
@@ -681,6 +710,32 @@ impl Vault {
     pub async fn revision(&self, scope: Scope) -> Result<u64> {
         need(scope, Scope::App)?;
         Ok(self.state.lock().await.revision)
+    }
+
+    /// The items used most recently, newest first, as a JSON list of ids: copied here, in
+    /// Glimpse or by the Assistant, filled in a browser, or opened in the window.
+    pub async fn recent(&self, scope: Scope) -> Result<String> {
+        need(scope, Scope::App)?;
+        let st = self.state.lock().await;
+        let session = st.session.as_ref().ok_or_else(locked)?;
+        let ids: Vec<String> = st
+            .recent
+            .iter()
+            .filter(|id| session.view.get(**id).is_some_and(|e| !e.deleted && e.readable))
+            .map(Uuid::to_string)
+            .collect();
+        Ok(json!(ids).to_string())
+    }
+
+    /// The window opened an item.
+    pub async fn opened_item(&self, scope: Scope, id: &str) -> Result<()> {
+        need(scope, Scope::App)?;
+        let id = parse_id(id)?;
+        let mut st = self.state.lock().await;
+        let session = st.session.as_ref().ok_or_else(locked)?;
+        session.view.get(id).ok_or_else(|| Failure::new(Code::NotFound, "no such item"))?;
+        used(&mut st, id);
+        Ok(())
     }
 
     /// Connects to the server's notification hub with a fresh access token.
@@ -1076,6 +1131,105 @@ impl Vault {
         Ok(serde_json::Value::Array(list).to_string())
     }
 
+    /// Travel Mode: JSON `{on, marked}`, `marked` being the marked items this copy holds
+    /// (none while it's on).
+    pub async fn travel_mode(&self, scope: Scope) -> Result<String> {
+        need(scope, Scope::App)?;
+        let st = self.state.lock().await;
+        let session = st.session.as_ref().ok_or_else(locked)?;
+        let on = st.store.travel().map_err(|e| Failure::new(Code::Failed, e.to_string()))?;
+        Ok(json!({"on": on, "marked": session.travel_marked()}).to_string())
+    }
+
+    /// Turns Travel Mode on (marked items leave this device at once) or off. Off needs
+    /// the master password confirmed just before and the server, which sends the items
+    /// back; if the sync fails it stays on.
+    pub async fn set_travel_mode(&self, scope: Scope, on: bool) -> Result<u32> {
+        need(scope, Scope::App)?;
+        let mut st = self.state.lock().await;
+        let st = &mut *st;
+        if on {
+            let session = st.session.as_mut().ok_or_else(locked)?;
+            let gone = session.enter_travel(&mut st.store)?;
+            st.revision += 1;
+            return Ok(gone as u32);
+        }
+        if !st.confirmed.is_some_and(|t| t.elapsed() < REPROMPT_GRACE) {
+            return Err(Failure::new(Code::Reprompt, "turning Travel Mode off needs the master password"));
+        }
+        let (server, refresh) = online(st)?;
+        st.store.set_travel(false).map_err(|e| Failure::new(Code::Failed, e.to_string()))?;
+        let session = st.session.as_mut().ok_or_else(locked)?;
+        if let Err(e) = session.sync(&mut st.store, &server, &refresh).await {
+            let _ = st.store.set_travel(true);
+            return Err(Failure::from(e));
+        }
+        st.revision += 1;
+        Ok(0)
+    }
+
+    /// The report's checks that need no password: JSON `[{id, insecure_address,
+    /// duplicates, incomplete}]`.
+    pub async fn hygiene(&self, scope: Scope) -> Result<String> {
+        need(scope, Scope::App)?;
+        let st = self.state.lock().await;
+        let session = st.session.as_ref().ok_or_else(locked)?;
+        let list: Vec<_> = audit::hygiene(&session.keys, &session.snapshot, &session.view)
+            .into_iter()
+            .map(|h| json!({"id": h.id, "insecure_address": h.insecure_address, "duplicates": h.duplicates, "incomplete": h.incomplete}))
+            .collect();
+        Ok(serde_json::Value::Array(list).to_string())
+    }
+
+    /// Logins for sites that offer one-time codes but have none saved: JSON `[{id,
+    /// docs}]`. The first call while the vault is open downloads 2fa.directory's whole
+    /// list (nothing about the vault is sent); it's kept in memory until the vault locks.
+    pub async fn check_two_factor(&self, scope: Scope) -> Result<String> {
+        need(scope, Scope::App)?;
+        let known = self.state.lock().await.two_factor.clone();
+        let sites = match known {
+            Some(sites) => sites,
+            None => {
+                let sites =
+                    audit::TwoFactorSites::fetch(audit::TWO_FACTOR_LIST).await.map_err(|e| Failure::new(Code::Failed, e))?;
+                let mut st = self.state.lock().await;
+                st.session.as_ref().ok_or_else(locked)?;
+                st.two_factor = Some(sites.clone());
+                sites
+            }
+        };
+        let st = self.state.lock().await;
+        let session = st.session.as_ref().ok_or_else(locked)?;
+        let list: Vec<_> = audit::missing_two_factor(&session.snapshot, &session.view, &sites)
+            .into_iter()
+            .map(|(id, docs)| json!({"id": id, "docs": docs}))
+            .collect();
+        Ok(serde_json::Value::Array(list).to_string())
+    }
+
+    /// The security report as counts only, for the Assistant: JSON `{logins, weak,
+    /// reused, old, flagged}`. No names, ids or anything about a single login.
+    pub async fn security_summary(&self, scope: Scope) -> Result<String> {
+        let mut st = self.state.lock().await;
+        let st = &mut *st;
+        match scope {
+            Scope::App => {}
+            Scope::Assistant => allow_finder(scope, st)?,
+            _ => return Err(denied()),
+        }
+        let session = st.session.as_ref().ok_or_else(locked)?;
+        let found = audit::audit(&session.keys, &session.snapshot, SystemTime::now(), &mut st.strength);
+        let logins = session.view.entries.iter().filter(|e| e.kind == Kind::Login && !e.deleted).count();
+        Ok(json!({
+            "logins": logins,
+            "weak": found.iter().filter(|f| f.weak).count(),
+            "reused": found.iter().filter(|f| f.reused > 0).count(),
+            "old": found.iter().filter(|f| f.age_days.is_some()).count(),
+            "flagged": found.len(),
+        })
+        .to_string())
+    }
+
     /// Checks every login's password against Have I Been Pwned's breach data, when the
     /// user asks: only the first five characters of each password's SHA-1 hash are sent.
     /// JSON `[{id, count}]`, for the logins found.
@@ -1426,8 +1580,38 @@ async fn signed_in(st: &mut State, server: Server, session: Session) {
     st.server = Some(server);
     st.session = Some(session);
     st.last_used = Instant::now();
-    st.recent.clear();
+    load_recent(st);
     super::browser::load(st);
+}
+
+/// The recently used list's place beside the vault, encrypted with the user key: item
+/// ids aren't secret, but which ones are used says something about the vault.
+const RECENT_KEPT: &str = "recent";
+
+/// Puts an item first among the recently used, and keeps the list.
+pub(super) fn used(st: &mut State, id: Uuid) {
+    if st.recent.front() == Some(&id) {
+        return;
+    }
+    st.recent.retain(|r| *r != id);
+    st.recent.push_front(id);
+    st.recent.truncate(RECENT);
+    let Some(session) = st.session.as_ref() else { return };
+    let ids: Vec<String> = st.recent.iter().map(Uuid::to_string).collect();
+    let text = serde_json::to_string(&ids).unwrap_or_default();
+    if let Ok(encrypted) = session.keys.item(None, None).and_then(|mut k| k.encrypt(&text)) {
+        let _ = st.store.set_setting(RECENT_KEPT, &encrypted);
+    }
+}
+
+/// The recently used list kept beside the vault, after an unlock.
+fn load_recent(st: &mut State) {
+    st.recent.clear();
+    let Some(session) = st.session.as_ref() else { return };
+    let Some(stored) = st.store.setting(RECENT_KEPT).ok().flatten() else { return };
+    let plain = session.keys.item(None, None).and_then(|mut k| k.decrypt(&stored));
+    let ids: Vec<Uuid> = plain.ok().and_then(|p| serde_json::from_str(p.expose()).ok()).unwrap_or_default();
+    st.recent = ids.into_iter().take(RECENT).collect();
 }
 
 /// After an unlock: the server, the saved session token, browser pairings.
@@ -1440,12 +1624,13 @@ async fn opened(st: &mut State, session: Session) {
     }
     st.session = Some(session);
     st.last_used = Instant::now();
+    load_recent(st);
     super::browser::load(st);
 }
 
 /// The keyring entry for the signed-in account, from the local copy (so it works while
 /// locked).
-fn unlock_entry(st: &State) -> Option<keyring::Entry> {
+pub(super) fn unlock_entry(st: &State) -> Option<keyring::Entry> {
     let account = st.store.account().ok().flatten()?;
     Some(keyring::Entry { server: account.server, email: account.email })
 }
@@ -1557,7 +1742,7 @@ fn parse_draft(text: &str) -> Result<LoginDraft> {
         #[serde(default)]
         totp: Option<String>,
         #[serde(default)]
-        uris: Vec<String>,
+        uris: Vec<UriJson>,
         #[serde(default)]
         notes: Option<String>,
         #[serde(default)]
@@ -1583,7 +1768,7 @@ fn parse_draft(text: &str) -> Result<LoginDraft> {
         username: opt(d.username),
         password: opt(d.password),
         totp: opt(d.totp),
-        uris: d.uris.into_iter().map(Secret::new).collect(),
+        uris: uri_drafts(d.uris)?,
         notes: opt(d.notes),
         folder: d.folder,
         favorite: d.favorite,
@@ -1591,6 +1776,45 @@ fn parse_draft(text: &str) -> Result<LoginDraft> {
         place: Place { organization: d.organization, collections: d.collections },
         custom: custom_fields(d.custom)?,
     })
+}
+
+/// A login address in a draft: its text (keeping the rule it had), or `{uri, match}`
+/// where `match` is a rule number, or null for the default.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum UriJson {
+    Text(String),
+    Ruled {
+        uri: String,
+        #[serde(default, rename = "match", deserialize_with = "present")]
+        rule: Option<Option<i64>>,
+    },
+}
+
+/// A field that is there, even as null, is `Some`; a missing one stays `None`.
+fn present<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Option<Option<i64>>, D::Error> {
+    Option::<i64>::deserialize(d).map(Some)
+}
+
+fn uri_drafts(list: Vec<UriJson>) -> Result<Vec<UriDraft>> {
+    use nyx_passwords_core::matching::{ANDROID_SCHEME, NEVER, android_package};
+    list.into_iter()
+        .map(|u| {
+            let (uri, rule) = match u {
+                UriJson::Text(uri) => (uri, None),
+                UriJson::Ruled { uri, rule } => (uri, rule),
+            };
+            if rule.flatten().is_some_and(|r| !(0..=NEVER).contains(&r)) {
+                return Err(Failure::new(Code::Failed, "an address has an unknown match rule"));
+            }
+            let text = uri.trim();
+            let android = text.get(..ANDROID_SCHEME.len()).is_some_and(|s| s.eq_ignore_ascii_case(ANDROID_SCHEME));
+            if android && android_package(text).is_none() {
+                return Err(Failure::new(Code::Failed, "an Android app's package name isn't valid"));
+            }
+            Ok(UriDraft { uri: Secret::new(uri), rule })
+        })
+        .collect()
 }
 
 /// A custom field in a draft: `{name, value, kind, from}` (see `CustomDraft`).
@@ -1697,7 +1921,7 @@ fn kind_name(kind: Kind) -> &'static str {
     }
 }
 
-fn item(e: &Entry) -> Item {
+pub(super) fn item(e: &Entry) -> Item {
     (
         e.id.to_string(),
         e.name.expose().to_string(),
@@ -1713,6 +1937,10 @@ fn entry_json(e: &Entry) -> serde_json::Value {
         "id": e.id, "kind": kind_name(e.kind), "name": e.name.expose(),
         "username": e.username.as_ref().map(|u| u.expose()),
         "uris": e.uris.iter().map(|u| u.expose()).collect::<Vec<_>>(),
+        "uri_rules": e.uri_rules,
+        "template": e.template,
+        "alias": e.alias,
+        "travel": e.travel,
         "host": e.host, "folder": e.folder, "organization": e.organization, "collections": e.collections,
         "favorite": e.favorite, "has_password": e.has_password, "has_totp": e.has_totp,
         "reprompt": e.reprompt, "deleted": e.deleted, "readable": e.readable, "revision": e.revision,
@@ -1776,6 +2004,21 @@ mod tests {
         assert!(parse_item_draft(r#"{"kind":"login","name":"GitHub"}"#).is_err());
         assert!(parse_item_draft(r#"{"kind":"ssh","name":"Key","fields":{"ssh.privateKey":"…"}}"#).is_ok());
         assert!(parse_item_draft(r#"{"kind":"other","name":"Key"}"#).is_err());
+    }
+
+    #[test]
+    fn address_drafts() {
+        let d = parse_draft(
+            r#"{"name":"Instagram","uris":["instagram.com",{"uri":"https://i.example","match":1},
+                {"uri":"androidapp://com.instagram.android","match":null},{"uri":"x.example"}]}"#,
+        )
+        .unwrap();
+        let rules: Vec<_> = d.uris.iter().map(|u| u.rule).collect();
+        assert_eq!(rules, [None, Some(Some(1)), Some(None), None]);
+        assert_eq!(d.uris[2].uri.expose(), "androidapp://com.instagram.android");
+        assert!(parse_draft(r#"{"name":"A","uris":[{"uri":"a.example","match":9}]}"#).is_err());
+        assert!(parse_draft(r#"{"name":"A","uris":["androidapp://instagram"]}"#).is_err());
+        assert!(parse_draft(r#"{"name":"A","uris":["AndroidApp://com.x/../y"]}"#).is_err());
     }
 
     #[test]

@@ -10,7 +10,7 @@ mod common;
 use std::num::NonZeroU32;
 
 use nyx_passwords_core::api::{ApiError, Server};
-use nyx_passwords_core::edit::{CustomDraft, ItemDraft, LoginDraft, Place};
+use nyx_passwords_core::edit::{CustomDraft, ItemDraft, LoginDraft, Place, UriDraft};
 use nyx_passwords_core::model::Kind;
 use nyx_passwords_core::secret::Secret;
 use nyx_passwords_core::session::{self, Session, SessionError, SignIn};
@@ -25,7 +25,7 @@ fn draft(name: &str, password: &str) -> LoginDraft {
         username: Some(Secret::new("octo")),
         password: Some(Secret::new(password)),
         totp: Some(Secret::new("JBSWY3DPEHPK3PXP")),
-        uris: vec![Secret::new("https://github.com/login"), Secret::new("github.com")],
+        uris: vec![Secret::new("https://github.com/login").into(), Secret::new("github.com").into()],
         notes: Some(Secret::new("written by nyx")),
         folder: None,
         favorite: true,
@@ -99,6 +99,213 @@ async fn logins_round_trip_with_bw() {
     assert_eq!(reveal(&s.keys, &s.snapshot, id, Field::Password).unwrap().expose(), "canary-three-Pw!9");
 }
 
+/// Android app associations (`androidapp://`) and match rules set here reach `bw`, and
+/// what `bw` adds to them survives the next edit here.
+#[tokio::test]
+#[ignore = "needs NYX_PW_TEST_SERVER"]
+async fn android_apps_and_match_rules() {
+    let email = common::fresh_email("android");
+    let password = "correct horse android battery";
+    common::register(&email, password, &bitwarden_crypto::Kdf::PBKDF2 { iterations: NonZeroU32::new(600_000).unwrap() }).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("vault.sqlite")).unwrap();
+    let server = Server::new(&common::server_url(), &[common::ca_pem()]).unwrap();
+    let SignIn::Done(mut s) =
+        session::sign_in(&mut store, &server, &email, &Secret::new(password), "nyx test", None).await.unwrap()
+    else {
+        panic!("two-step login")
+    };
+    let refresh = Secret::new(s.refresh_token().unwrap().expose());
+
+    let mut d = draft("Instagram", "canary-insta-Pw!9");
+    d.uris = vec![
+        UriDraft { uri: Secret::new("https://www.instagram.com"), rule: Some(Some(1)) },
+        UriDraft { uri: Secret::new("androidapp://com.instagram.android"), rule: Some(None) },
+    ];
+    let id = s.create_login(&mut store, &server, &refresh, &d).await.unwrap();
+    let bw = common::Bw::login(&email, password);
+    let item = bw.item(&id.to_string());
+    assert_eq!(item["login"]["uris"][0]["uri"], "https://www.instagram.com");
+    assert_eq!(item["login"]["uris"][0]["match"], 1);
+    assert_eq!(item["login"]["uris"][1]["uri"], "androidapp://com.instagram.android");
+    assert!(item["login"]["uris"][1]["match"].is_null());
+
+    // Another client adds an app and changes the web address's rule.
+    std::thread::sleep(std::time::Duration::from_millis(2100));
+    let mut theirs = item.clone();
+    theirs["login"]["uris"][0]["match"] = 3.into();
+    theirs["login"]["uris"].as_array_mut().unwrap().push(json!({"uri": "androidapp://com.instagram.lite", "match": null}));
+    bw.edit(&id.to_string(), &theirs);
+    s.sync(&mut store, &server, &refresh).await.unwrap();
+    let e = s.view.get(id).unwrap();
+    assert_eq!(e.uris.len(), 3);
+    assert_eq!(e.uri_rules, [Some(3), None, None]);
+
+    // A rename here keeps every address and rule as they are.
+    let before = bw.item(&id.to_string());
+    let mut keep = draft_of(&before);
+    keep.name = Secret::new("Instagram (renamed)");
+    s.update_login(&mut store, &server, &refresh, id, &keep).await.unwrap();
+    let after = bw.item(&id.to_string());
+    assert_eq!(after["login"]["uris"], before["login"]["uris"]);
+
+    // Setting a rule here changes only that address's rule.
+    keep.uris[0].rule = Some(Some(0));
+    s.update_login(&mut store, &server, &refresh, id, &keep).await.unwrap();
+    let after = bw.item(&id.to_string());
+    assert_eq!(after["login"]["uris"][0]["match"], 0);
+    assert_eq!(after["login"]["uris"].as_array().unwrap()[1..], before["login"]["uris"].as_array().unwrap()[1..]);
+}
+
+/// A templated item is a plain login and a secure note with named custom fields and the
+/// `nyx:template` marker: `bw` reads every value, and the view knows the template.
+#[tokio::test]
+#[ignore = "needs NYX_PW_TEST_SERVER"]
+async fn templates_round_trip_with_bw() {
+    let email = common::fresh_email("templates");
+    let password = "correct horse template battery";
+    common::register(&email, password, &bitwarden_crypto::Kdf::PBKDF2 { iterations: NonZeroU32::new(600_000).unwrap() }).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("vault.sqlite")).unwrap();
+    let server = Server::new(&common::server_url(), &[common::ca_pem()]).unwrap();
+    let SignIn::Done(mut s) =
+        session::sign_in(&mut store, &server, &email, &Secret::new(password), "nyx test", None).await.unwrap()
+    else {
+        panic!("two-step login")
+    };
+    let refresh = Secret::new(s.refresh_token().unwrap().expose());
+    let field = |name: &str, value: &str, kind| CustomDraft {
+        name: Secret::new(name),
+        value: Some(Secret::new(value)),
+        kind,
+        from: None,
+    };
+
+    let mut wifi = draft("Home Wi-Fi", "canary-wifi-Pw!9");
+    wifi.username = Some(Secret::new("HomeNet"));
+    wifi.totp = None;
+    wifi.uris = vec![];
+    wifi.custom = Some(vec![
+        field("Security", "WPA3", 0),
+        field("Hidden network", "true", 2),
+        field(nyx_passwords_proto::custom::TEMPLATE, "wifi", 0),
+    ]);
+    let id = s.create_login(&mut store, &server, &refresh, &wifi).await.unwrap();
+    let bw = common::Bw::login(&email, password);
+    let item = bw.item(&id.to_string());
+    assert_eq!(item["type"], 1);
+    assert_eq!(item["login"]["username"], "HomeNet");
+    assert_eq!(item["login"]["password"], "canary-wifi-Pw!9");
+    assert_eq!(item["fields"][0], json!({"name": "Security", "value": "WPA3", "type": 0}));
+    assert_eq!(item["fields"][1]["value"], "true");
+    assert_eq!(item["fields"][2]["value"], "wifi");
+    assert_eq!(s.view.get(id).unwrap().template.as_deref(), Some("wifi"));
+
+    let license = ItemDraft {
+        kind: Kind::Note,
+        name: Secret::new("Editor license"),
+        fields: vec![],
+        notes: None,
+        folder: None,
+        favorite: false,
+        reprompt: false,
+        place: Place::default(),
+        custom: Some(vec![
+            field("License key", "canary-LICENSE-KEY", 1),
+            field("Licensed to", "Ken", 0),
+            field(nyx_passwords_proto::custom::TEMPLATE, "license", 0),
+        ]),
+    };
+    let note = s.create_item(&mut store, &server, &refresh, &license).await.unwrap();
+    let item = bw.item(&note.to_string());
+    assert_eq!(item["type"], 2);
+    assert_eq!(item["fields"][0]["value"], "canary-LICENSE-KEY");
+    assert_eq!(item["fields"][0]["type"], 1);
+    assert_eq!(s.view.get(note).unwrap().template.as_deref(), Some("license"));
+
+    // Without the marker (removed in another client), it's a plain note again.
+    std::thread::sleep(std::time::Duration::from_millis(2100));
+    let mut theirs = item.clone();
+    theirs["fields"].as_array_mut().unwrap().pop();
+    bw.edit(&note.to_string(), &theirs);
+    s.sync(&mut store, &server, &refresh).await.unwrap();
+    assert_eq!(s.view.get(note).unwrap().template, None);
+}
+
+/// The report's checks that need no password, and the two-step check against a list.
+#[tokio::test]
+#[ignore = "needs NYX_PW_TEST_SERVER"]
+async fn security_report_checks() {
+    use nyx_passwords_core::audit::{self, TwoFactorSites};
+    let email = common::fresh_email("report");
+    let password = "correct horse report battery";
+    common::register(&email, password, &bitwarden_crypto::Kdf::PBKDF2 { iterations: NonZeroU32::new(600_000).unwrap() }).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("vault.sqlite")).unwrap();
+    let server = Server::new(&common::server_url(), &[common::ca_pem()]).unwrap();
+    let SignIn::Done(mut s) =
+        session::sign_in(&mut store, &server, &email, &Secret::new(password), "nyx test", None).await.unwrap()
+    else {
+        panic!("two-step login")
+    };
+    let refresh = Secret::new(s.refresh_token().unwrap().expose());
+    let login = |name: &str, user: Option<&str>, pw: Option<&str>, uris: &[&str]| LoginDraft {
+        name: Secret::new(name),
+        username: user.map(Secret::new),
+        password: pw.map(Secret::new),
+        totp: None,
+        uris: uris.iter().map(|u| Secret::new(*u).into()).collect(),
+        notes: None,
+        folder: None,
+        favorite: false,
+        reprompt: false,
+        place: Place::default(),
+        custom: None,
+    };
+    let mut ids = Vec::new();
+    for d in [
+        login("Insecure", Some("me"), Some("canary-a-Pw!9x"), &["http://shop.example.com/login"]),
+        login("Dup A", Some("Same"), Some("canary-b-Pw!9x"), &["https://dup.example.com"]),
+        login("Dup B", Some("same"), Some("canary-c-Pw!9x"), &["https://login.dup.example.com"]),
+        login("Empty", Some("me"), None, &["https://empty.example.com"]),
+        login("Router", Some("admin"), Some("canary-d-Pw!9x"), &["http://192.168.1.1"]),
+    ] {
+        ids.push(s.create_login(&mut store, &server, &refresh, &d).await.unwrap());
+    }
+    let card = ItemDraft {
+        kind: Kind::Card,
+        name: Secret::new("Card"),
+        fields: vec![("card.cardholderName".into(), Secret::new("Me"))],
+        notes: None,
+        folder: None,
+        favorite: false,
+        reprompt: false,
+        place: Place::default(),
+        custom: None,
+    };
+    let card = s.create_item(&mut store, &server, &refresh, &card).await.unwrap();
+
+    let found = audit::hygiene(&s.keys, &s.snapshot, &s.view);
+    let get = |id: Uuid| found.iter().find(|h| h.id == id).cloned();
+    assert!(get(ids[0]).unwrap().insecure_address, "http:// to a public host");
+    assert_eq!(get(ids[1]).unwrap().duplicates, [ids[2]], "same base domain and username, any case");
+    assert_eq!(get(ids[2]).unwrap().duplicates, [ids[1]]);
+    assert_eq!(get(ids[3]).unwrap().incomplete, ["password"]);
+    assert!(get(ids[4]).is_none(), "a router on the home network isn't flagged");
+    assert_eq!(get(card).unwrap().incomplete, ["card number"]);
+
+    let sites = TwoFactorSites::parse(
+        br#"[["Dup", {"domain": "dup.example.com", "documentation": "https://dup.example.com/2fa"}],
+            ["Shop", {"domain": "example.com"}]]"#,
+    )
+    .unwrap();
+    let missing = audit::missing_two_factor(&s.snapshot, &s.view, &sites);
+    let docs = |id: Uuid| missing.iter().find(|(i, _)| *i == id).map(|(_, d)| d.clone());
+    assert_eq!(docs(ids[1]), Some(Some("https://dup.example.com/2fa".into())));
+    assert_eq!(docs(ids[0]), Some(None), "shop.example.com falls under example.com");
+    assert_eq!(docs(ids[4]), None);
+}
+
 /// A draft that changes nothing: the item as `bw` shows it.
 fn draft_of(item: &Value) -> LoginDraft {
     let text = |v: &Value| v.as_str().map(Secret::new);
@@ -108,7 +315,7 @@ fn draft_of(item: &Value) -> LoginDraft {
         username: text(&login["username"]),
         password: text(&login["password"]),
         totp: text(&login["totp"]),
-        uris: login["uris"].as_array().into_iter().flatten().filter_map(|u| text(&u["uri"])).collect(),
+        uris: login["uris"].as_array().into_iter().flatten().filter_map(|u| text(&u["uri"]).map(Into::into)).collect(),
         notes: text(&item["notes"]),
         folder: item["folderId"].as_str().map(|f| f.parse().unwrap()),
         favorite: item["favorite"].as_bool().unwrap(),
@@ -412,6 +619,11 @@ async fn ssh_keys_round_trip_with_bw() {
         Err(SessionError::BadSshKey(nyx_passwords_core::ssh::SshError::Unreadable))
     ));
     assert_eq!(bw.item(&id.to_string())["sshKey"]["keyFingerprint"], made.fingerprint.as_str());
+
+    // A full sync keeps it: Vaultwarden sends SSH keys only to clients that say they
+    // know them.
+    s.sync(&mut store, &server, &refresh).await.unwrap();
+    assert_eq!(s.view.get(id).map(|e| e.kind), Some(Kind::SshKey));
 }
 
 async fn signed_in(store: &mut Store, server: &Server, email: &str, password: &str) -> (Box<Session>, Secret) {

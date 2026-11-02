@@ -34,8 +34,8 @@ fn main() {
 fn pages() -> Value {
     json!([{
         "id": "passwords", "title": "Passwords", "icon": "dialog-password-symbolic",
-        "description": "Vault locking, clipboard and Glimpse",
-        "keywords": "passwords vault vaultwarden bitwarden lock clipboard glimpse assistant",
+        "description": "Vault locking, clipboard, Glimpse, browsers and email aliases",
+        "keywords": "passwords vault vaultwarden bitwarden lock clipboard glimpse assistant browser alias fastmail simplelogin template",
     }])
 }
 
@@ -111,10 +111,70 @@ fn describe() -> Value {
                 {"kind": "switch", "key": "glimpse", "title": "Find logins in Glimpse", "desc": "Type “pw” and a name. Passwords are never shown there.", "value": s.glimpse},
             ]},
             {"title": "Nyx Assistant", "rows": [
-                {"kind": "switch", "key": "assistant", "title": "Find and copy logins", "desc": "The Assistant asks for a key press each time and never sees a password.", "value": s.assistant},
+                {"kind": "switch", "key": "assistant", "title": "Find and copy logins", "desc": "Also generate passwords, count weak ones and show a login. The Assistant asks for a key press each time and never sees a password.", "value": s.assistant},
             ]},
+            {"title": "SSH agent", "collapsible": true, "rows": [
+                {"kind": "switch", "key": "ssh_agent", "title": "SSH agent", "desc": "Let ssh and git use the keys turned on for it; each use asks first.", "value": s.ssh_agent},
+                {"kind": "info", "key": "ssh_socket", "title": "SSH_AUTH_SOCK", "value": proto::ssh_agent_socket_path().map(|p| p.display().to_string()).unwrap_or_default()},
+            ]},
+            {"title": "Browsers", "collapsible": true, "rows": [
+                {"kind": "switch", "key": "fill_on_load", "title": "Fill logins as pages load", "desc": "Only on https, only the login made for that exact site, only into empty fields.", "value": s.fill_on_load},
+                {"kind": "switch", "key": "browser_passkeys", "title": "Passkeys in browsers", "desc": "Paired browsers may offer and save passkeys; each use is confirmed in the extension.", "value": s.browser_passkeys},
+                {"kind": "button", "key": "open_browsers", "title": "Paired browsers", "desc": "Pair and remove browsers in Passwords' settings.", "label": "Open"},
+            ]},
+            {"title": "Email aliases", "collapsible": true, "rows": aliases(&s)},
+            {"title": "Templates", "collapsible": true, "rows": templates()},
         ]
     })
+}
+
+/// The username generator's alias service and its settings. Tokens are set in the
+/// Passwords window: a value given here would pass through a command line.
+fn aliases(s: &Settings) -> Vec<Value> {
+    let r = &s.username_rules;
+    let services: Vec<Value> = nyx_passwords_core::alias::SERVICES.iter().map(|(id, name)| json!([id, name])).collect();
+    let kinds = json!([
+        ["word", "A random word"],
+        ["plus", "Your email with a tag"],
+        ["catch_all", "An address at your catch-all domain"],
+        ["forwarded", "An alias from an email service"]
+    ]);
+    let kind = serde_json::to_value(r.kind).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+    let mut rows = vec![
+        json!({"kind": "choice", "key": "username.kind", "title": "Generate usernames", "value": kind, "options": kinds, "refresh": true}),
+    ];
+    if kind == "forwarded" {
+        rows.extend([
+            json!({"kind": "choice", "key": "username.service", "title": "Email alias service", "value": r.service, "options": services}),
+            json!({"kind": "entry", "key": "username.service_domain", "title": "Alias domain", "desc": "addy.io, Forward Email and Cloudflare.", "value": r.service_domain, "placeholder": "example.com"}),
+            json!({"kind": "entry", "key": "username.service_url", "title": "Your own server", "desc": "A self-hosted SimpleLogin or addy.io; empty for the hosted one.", "value": r.service_url, "placeholder": "https://"}),
+            json!({"kind": "entry", "key": "username.zone_id", "title": "Cloudflare zone id", "value": r.zone_id}),
+            json!({"kind": "entry", "key": "username.forward_to", "title": "Cloudflare forwards to", "desc": "A verified destination address.", "value": r.forward_to}),
+        ]);
+    } else if kind == "plus" {
+        rows.push(json!({"kind": "entry", "key": "username.email", "title": "Your email address", "value": r.email}));
+    } else if kind == "catch_all" {
+        rows.push(json!({"kind": "entry", "key": "username.domain", "title": "Catch-all domain", "value": r.domain}));
+    }
+    rows.push(json!({"kind": "button", "key": "open_aliases", "title": "Aliases and API tokens", "desc": "See and turn off aliases, and save each service's token, in Passwords.", "label": "Open"}));
+    rows
+}
+
+/// The user's own templates, by name; they're made and changed in Passwords.
+fn templates() -> Vec<Value> {
+    let path = paths::app_dir().join("templates.toml");
+    let own: Vec<String> = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| toml::from_str::<nyx_passwords_core::templates::TemplateFile>(&t).ok())
+        .map(|f| f.usable().into_iter().map(|t| t.name).collect())
+        .unwrap_or_default();
+    let built_in = nyx_passwords_core::templates::builtin().len();
+    let value =
+        if own.is_empty() { format!("{built_in} built in") } else { format!("{built_in} built in · yours: {}", own.join(", ")) };
+    vec![
+        json!({"kind": "info", "key": "templates", "title": "Templates", "value": value}),
+        json!({"kind": "button", "key": "open_templates", "title": "Make or change templates", "desc": "In Passwords' settings.", "label": "Open"}),
+    ]
 }
 
 fn set(key: &str, value: &str) -> Result<Value, String> {
@@ -126,30 +186,68 @@ fn set(key: &str, value: &str) -> Result<Value, String> {
                 Err(e) => Err(e),
             };
         }
-        "open" => {
-            std::process::Command::new("nyx-passwords").spawn().map_err(|_| "Couldn't open Passwords".to_string())?;
+        "open" | "open_aliases" | "open_templates" | "open_browsers" => {
+            let section = match key {
+                "open_aliases" => Some("aliases"),
+                "open_templates" | "open_browsers" => Some("settings"),
+                _ => None,
+            };
+            let mut window = std::process::Command::new("nyx-passwords");
+            if let Some(section) = section {
+                window.args(["--section", section]);
+            }
+            window.spawn().map_err(|_| "Couldn't open Passwords".to_string())?;
             return Ok(Value::Null);
         }
         _ => {}
     }
-    let new = match key {
-        "lock_minutes" | "clipboard_seconds" | "sync_minutes" => {
+    // The username generator's settings live in their own table.
+    let (table_key, key) = match key.split_once('.') {
+        Some(("username", field)) => (Some("username_rules"), field),
+        Some(_) => return Err(format!("unknown setting {key}")),
+        None => (None, key),
+    };
+    let new = match (table_key, key) {
+        (None, "lock_minutes" | "clipboard_seconds" | "sync_minutes") => {
             toml::Value::Integer(value.parse::<i64>().map_err(|_| "not a number".to_string())?)
         }
-        "lock_on_screen_lock" | "lock_on_sleep" | "paste_once" | "notify_copies" | "glimpse" | "assistant" => {
-            toml::Value::Boolean(value == "true")
+        (
+            None,
+            "lock_on_screen_lock"
+            | "lock_on_sleep"
+            | "paste_once"
+            | "notify_copies"
+            | "glimpse"
+            | "assistant"
+            | "fill_on_load"
+            | "browser_passkeys"
+            | "ssh_agent",
+        ) => toml::Value::Boolean(value == "true"),
+        (Some(_), "kind") if ["word", "plus", "catch_all", "forwarded"].contains(&value) => toml::Value::String(value.into()),
+        (Some(_), "service") if nyx_passwords_core::alias::SERVICES.iter().any(|(id, _)| *id == value) => {
+            toml::Value::String(value.into())
+        }
+        (Some(_), "service_domain" | "service_url" | "zone_id" | "forward_to" | "email" | "domain") if value.len() <= 320 => {
+            toml::Value::String(value.trim().into())
         }
         _ => return Err(format!("unknown setting {key}")),
     };
     // Edit only this key, keeping the window's own settings as they are.
     let path = file();
-    let mut table: toml::Table = std::fs::read_to_string(&path)
+    let mut root: toml::Table = std::fs::read_to_string(&path)
         .ok()
         .map(|t| toml::from_str(&t).map_err(|_| "settings.toml couldn't be read; fix or remove it".to_string()))
         .transpose()?
         .unwrap_or_default();
-    table.insert(key.to_string(), new);
-    let text = toml::to_string(&table).map_err(|e| e.to_string())?;
+    let target = match table_key {
+        Some(name) => match root.entry(name).or_insert_with(|| toml::Value::Table(Default::default())) {
+            toml::Value::Table(t) => t,
+            _ => return Err("settings.toml couldn't be read; fix or remove it".into()),
+        },
+        None => &mut root,
+    };
+    target.insert(key.to_string(), new);
+    let text = toml::to_string(&root).map_err(|e| e.to_string())?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }

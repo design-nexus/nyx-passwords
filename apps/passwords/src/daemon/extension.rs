@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use nyx_passwords_core::edit::{CustomDraft, LoginDraft, Place};
+use nyx_passwords_core::edit::{CustomDraft, LoginDraft, Place, UriDraft};
 use nyx_passwords_core::matching;
 use nyx_passwords_core::model::Kind;
 use nyx_passwords_core::passkey::{self, NewPasskey};
@@ -379,8 +379,8 @@ pub(super) async fn edit(st: &mut State, pairing: &str, request: &Value) -> Valu
                 return error(Code::Denied);
             }
             let get = |field| reveal_for_use(&session.keys, &session.snapshot, id, field).ok();
-            let mut uris: Vec<Secret> = e.uris.iter().map(|u| Secret::new(u.expose())).collect();
-            uris.push(Secret::new(page.origin().ascii_serialization()));
+            let mut uris: Vec<UriDraft> = e.uris.iter().map(|u| Secret::new(u.expose()).into()).collect();
+            uris.push(Secret::new(page.origin().ascii_serialization()).into());
             let draft = LoginDraft {
                 name: Secret::new(e.name.expose()),
                 username: e.username.as_ref().map(|u| Secret::new(u.expose())),
@@ -416,7 +416,7 @@ pub(super) async fn edit(st: &mut State, pairing: &str, request: &Value) -> Valu
                 username: (!username.is_empty()).then(|| Secret::new(username)),
                 password: None,
                 totp: None,
-                uris: vec![Secret::new(page.origin().ascii_serialization())],
+                uris: vec![Secret::new(page.origin().ascii_serialization()).into()],
                 notes: None,
                 folder: None,
                 favorite: false,

@@ -31,6 +31,8 @@ const PENDING_FOR: Duration = Duration::from_secs(120);
 const MAX_PENDING: usize = 4;
 const CLOCK_SKEW_MS: u64 = 5 * 60 * 1000;
 const FILLS_PER_MINUTE: usize = 30;
+/// Usernames a pairing may ask for in a minute: each may make a real alias at a service.
+const USERNAMES_PER_MINUTE: usize = 5;
 const MATCHES: usize = 20;
 
 #[derive(Default)]
@@ -54,6 +56,7 @@ struct Active {
     key: PairKey,
     last: u64,
     fills: VecDeque<Instant>,
+    usernames: VecDeque<Instant>,
 }
 
 /// The tab a paired extension last said was active, in which browser process. It holds
@@ -85,7 +88,9 @@ pub fn load(st: &mut State) {
     for p in pairings {
         let key = session.keys.item(None, None).and_then(|mut k| k.decrypt(&p.key)).and_then(|plain| PairKey::import(&plain));
         if let Ok(key) = key {
-            st.browser.active.insert(p.id.clone(), Active { pairing: p, key, last: 0, fills: VecDeque::new() });
+            st.browser
+                .active
+                .insert(p.id.clone(), Active { pairing: p, key, last: 0, fills: VecDeque::new(), usernames: VecDeque::new() });
         }
     }
 }
@@ -210,6 +215,13 @@ impl Vault {
                 json!({})
             }
             "username" => {
+                {
+                    let mut st = self.state.lock().await;
+                    let Some(active) = st.browser.active.get_mut(pairing) else { return error(Code::Denied) };
+                    if !within(&mut active.usernames, USERNAMES_PER_MINUTE) {
+                        return error(Code::RateLimited);
+                    }
+                }
                 let site = request["url"].as_str().unwrap_or_default();
                 match self.generate_username(Scope::Browser, site).await {
                     Ok(made) => json!({"username": made.expose()}),
@@ -331,7 +343,10 @@ impl Vault {
             created: now_ms() / 1000,
         };
         st.store.put_pairing(&pairing).map_err(|e| Failure::new(Code::Failed, e.to_string()))?;
-        st.browser.active.insert(pending.id, Active { pairing, key: pending.key, last: 0, fills: VecDeque::new() });
+        st.browser.active.insert(
+            pending.id,
+            Active { pairing, key: pending.key, last: 0, fills: VecDeque::new(), usernames: VecDeque::new() },
+        );
         Ok(())
     }
 
@@ -454,8 +469,7 @@ fn handle(st: &mut State, pairing: &str, browser: &(i32, String), request: &Valu
                     Err(_) => return error(Code::NoField),
                 }
             };
-            st.recent.retain(|r| *r != id);
-            st.recent.push_front(id);
+            super::vault::used(st, id);
             st.last_used = Instant::now();
             answer
         }
@@ -522,7 +536,7 @@ async fn save(st: &mut State, pairing: &str, request: &Value) -> Value {
                 username: entry.username.as_ref().map(|u| Secret::new(u.expose())),
                 password: Some(Secret::new(password)),
                 totp: get(Field::TotpSeed),
-                uris: entry.uris.iter().map(|u| Secret::new(u.expose())).collect(),
+                uris: entry.uris.iter().map(|u| Secret::new(u.expose()).into()).collect(),
                 notes: get(Field::Notes),
                 folder: entry.folder,
                 favorite: entry.favorite,
@@ -539,7 +553,7 @@ async fn save(st: &mut State, pairing: &str, request: &Value) -> Value {
                 username: (!username.is_empty()).then(|| Secret::new(username.as_str())),
                 password: Some(Secret::new(password)),
                 totp: None,
-                uris: vec![Secret::new(url.origin().ascii_serialization())],
+                uris: vec![Secret::new(url.origin().ascii_serialization()).into()],
                 notes: None,
                 folder: None,
                 favorite: false,

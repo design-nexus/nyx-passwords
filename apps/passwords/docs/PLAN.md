@@ -100,6 +100,28 @@ the app says so when it's unreachable.
 - `cargo deny` and `cargo audit` in CI.
 - Release workflow (`passwords-v<version>` tags).
 
+## Phase 7: completion
+
+From the audit in [AUDIT.md](AUDIT.md), in order. Each stops for approval where a
+security-sensitive design is chosen.
+
+1. **Done (2026-11-01):** CI checks, per-address match rules and Android app
+   associations, templates, Recent, the email alias interface (Fastmail, SimpleLogin,
+   addy.io, Firefox Relay, Forward Email, Cloudflare; DuckDuckGo makes aliases only),
+   Online Accounts' Fastmail as the suggested service.
+2. **Done (2026-11-01): desktop integration.** Assistant tools for generating, a
+   security summary (counts only) and opening an item; Settings groups for browsers,
+   aliases and templates; `pw aliases` in Glimpse. Left: the proto pin in Glimpse, once
+   pushed.
+3. **Done (2026-11-02): advanced security.** The security report's missing checks with
+   one-step fixes; the SSH agent; Travel Mode; grants for other Nyx apps, with an
+   activity log. Designs and limits in SECURITY.md.
+4. **Validation:** security review, Bitwarden Android on a device, the web vault, every
+   browser.
+5. **Last:** fingerprint, face and security-key unlock on Nyx Biometrics.
+
+Deferred, with reasons in AUDIT.md: several accounts at once, and edits made offline.
+
 ## Decisions taken
 
 | Decision | Choice |
@@ -109,3 +131,8 @@ the app says so when it's unreachable.
 | Testing | A local throwaway Vaultwarden; never the real server without asking |
 | IPC | Peer-to-peer D-Bus on a private socket, not the session bus |
 | Clipboard | Owned by the daemon through data-control |
+| Android | The official Bitwarden Android app against the same Vaultwarden; no Nyx Android app unless it becomes necessary |
+| Browsers | The Nyx extension first; the official Bitwarden extension keeps working beside it |
+| Templates | A presentation layer: standard items, named custom fields, a `nyx:template` marker; custom templates local to the machine |
+| SSH agent | The daemon's own agent socket, so private keys never leave it |
+| Biometrics | Built last, on the shared Nyx Biometrics service |

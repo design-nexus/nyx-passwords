@@ -15,9 +15,10 @@ so Glimpse needs nothing GPL.
 
 ### Peers and scopes
 
-When a peer connects, the daemon reads SO_PEERCRED and `/proc/<pid>/exe`. A peer
-whose uid differs, or whose executable isn't in this table (resolved, not by name),
-is disconnected before any method runs.
+When a peer connects, the daemon reads SO_PEERCRED and a pidfd (SO_PEERPIDFD), then
+`/proc/<pid>/exe`; the pidfd's pid is read before and after, so a reused pid fails. A
+peer whose uid differs, or whose executable isn't in this table (resolved, not by
+name), is disconnected before any method runs.
 
 | Executable | Scope |
 | --- | --- |
@@ -25,11 +26,13 @@ is disconnected before any method runs.
 | `~/.local/bin/nyx-glimpse` | `glimpse`: `Status`, `Search`, `Suggest`, `Copy`, `OpenUrl`, `Generate`, `Lock` |
 | `~/.local/bin/nyx-passwords-settings` | `settings`: `Status`, `Lock`, `Sync` |
 | `~/.local/bin/nyx-passwords-bridge` | `browser`: per-origin calls in [NATIVE_MESSAGING.md](NATIVE_MESSAGING.md) |
-| `~/.local/bin/nyx-passwords-assistant` | `assistant`: `Status`, `Search`, `Copy` (username, password, code). Off until `assistant = true` |
+| `~/.local/bin/nyx-passwords-assistant` | `assistant`: `Status`, `Search`, `Copy` (username, password, code), `Generate`, `SecuritySummary`. Off until `assistant = true` |
+
+| any other `nyx-*` program beside the daemon | `requester`: `Status`, `Lock`, and the four methods in "For other Nyx apps", only within what the user granted |
 
 Each integration can be turned off in settings (`glimpse = false` and so on). Its peer
-is then refused with `Denied`. In debug builds an extra allowlist entry for
-`target/debug/` binaries is accepted only when the daemon itself is a debug build.
+is then refused with `Denied`. The table's directory is the daemon's own: installed,
+`~/.local/bin`; run from a checkout, the same `target/<profile>` the daemon runs from.
 
 ## Methods for Glimpse
 
@@ -71,8 +74,10 @@ Messages carry no values.
 - `Search` limit: capped at 50.
 - Queries: capped at 256 bytes.
 
-**Recently used:** the daemon keeps a list of item ids in memory and drops it on lock.
-Item ids are not secret, but the list reveals usage, so it isn't written to disk.
+**Recently used:** the daemon keeps the last 20 item ids used (copied here, in Glimpse
+or by the Assistant, filled in a browser, or opened in the window). Item ids are not
+secret, but the list reveals usage, so it is kept encrypted with the user key beside the
+vault, read back on unlock, dropped from memory on lock and removed on sign-out.
 
 ## Methods for the app only
 
@@ -93,6 +98,8 @@ Item ids are not secret, but the list reveals usage, so it isn't written to disk
 | `VerifyPassword` | `(s password) → ()` | For items that ask for the master password again |
 | `SignOut` | `() → ()` | Removes the account, the local copy and the saved token |
 | `Sync` | `() → ()` | Also allowed for the Settings page |
+| `Recent` | `() → s` | JSON list of item ids, most recently used first (see "Recently used") |
+| `OpenedItem` | `(s id) → ()` | The window opened an item: it goes first among the recently used |
 | `Revision` | `() → t` | Goes up each time a sync (timed, live or asked for) brings the vault in; the window polls it and lists again when it changes |
 | `Icon` | `(s host) → ay` | A site's icon image, fetched through the server's icon service and kept in daemon memory until the vault locks (never on disk). `Denied` while website icons are off; `NoField` when the site has none |
 | `List` | `() → s` | JSON: account, entries (metadata, with `editable`, `view_password`, `deletable`, `restorable`), folders, collections (with `writable`), organizations |
@@ -117,6 +124,7 @@ Item ids are not secret, but the list reveals usage, so it isn't written to disk
 | `GenerateSshKey` | `() → s` | A new Ed25519 key: JSON `{private, public, fingerprint}` |
 | `ReadSshKey` | `(s private) → s` | JSON `{public, fingerprint}` for an OpenSSH private key; fails for a key with a passphrase ("this key has a passphrase") |
 | `OpenSshKey` | `(s private, s passphrase) → s` | JSON `{private, public, fingerprint}`: the key opened with its passphrase, `private` without it (as items keep keys) |
+| `SecuritySummary` | `() → s` | JSON `{logins, weak, reused, old, flagged}`: the report as counts only. Also for the Assistant |
 | `Report` | `() → s` | JSON `[{id, reused, weak, age_days}]`: logins with a password used by others, weak (zxcvbn below 3), or unchanged for over a year (`age_days` then set). Worked out in memory |
 | `CheckBreaches` | `() → s` | JSON `[{id, count}]`: logins whose password is in Have I Been Pwned's breach data. Sends only 5-character SHA-1 prefixes; the app asks the user first |
 | `Attachments` | `(s id) → s` | JSON `[{id, name, size}]`; `size` is the server's, of the encrypted file |
@@ -134,6 +142,36 @@ Item ids are not secret, but the list reveals usage, so it isn't written to disk
 | `RenameFolder` | `(s id, s name) → ()` | |
 | `DeleteFolder` | `(s id) → ()` | Its items stay, in no folder |
 
+### More app-only methods
+
+| Method | Signature | Notes |
+| --- | --- | --- |
+| `Hygiene` | `() → s` | JSON `[{id, insecure_address, duplicates, incomplete}]`: the report's checks that need no password |
+| `CheckTwoFactor` | `() → s` | JSON `[{id, docs}]`: logins for sites that offer one-time codes but have none saved. Downloads 2fa.directory's whole list the first time while unlocked |
+| `TravelMode` | `() → s` | JSON `{on, marked}` |
+| `SetTravelMode` | `(b on) → u` | On: marked items leave this device (returns how many). Off: needs `VerifyPassword` first and the server (`Reprompt` otherwise) |
+| `Approvals` | `() → s` | JSON `[{id, title, detail, program, once_label, session_label}]`: what waits for the user (the approval card) |
+| `Answer` | `(t id, s answer) → ()` | `deny`, `once`, or `session` where offered |
+| `SshAgentKeys` | `() → s` | JSON list of the SSH key items turned on for the agent |
+| `SetSshAgentKey` | `(s id, b on) → ()` | Turning one off also ends what was allowed for it until the lock |
+| `Grants` | `() → s` | JSON `[{app, search, copy, ask_each_copy, granted, expires}]` |
+| `RevokeGrant` | `(s app) → ()` | |
+| `Activity` | `() → s` | JSON `[{at, who, what, item, outcome}]`, newest first; no values or names |
+
+## For other Nyx apps
+
+Any `nyx-*` program installed beside the daemon may connect (identified like every
+peer: uid, pidfd, executable path). It can do nothing until the user grants it access.
+
+| Method | Signature | Notes |
+| --- | --- | --- |
+| `RequestAccess` | `(s scopes, s reason, u minutes) → s` | `scopes`: JSON list of `search` and `copy`; `reason` is shown as the app's words (200 characters at most); `minutes` at most 10080. Waits for the user's answer (up to a minute): JSON `{granted, ask_each_copy, expires}` |
+| `AccessStatus` | `() → s` | JSON `{search, copy, ask_each_copy, expires}`, or `null` |
+| `AppSearch` | `(s query, u limit) → a(ssssbs)` | With `search`: the same `Item`s Glimpse gets |
+| `AppCopy` | `(s id, s field) → u` | With `copy`: `username`, `password` or `totp` onto the clipboard; returns the seconds until it's cleared. Asks first when the grant says so; `Reprompt` for items that ask for the master password; 10 a minute |
+
+No method returns a secret to an app.
+
 ## Glimpse behaviour
 
 ### Routing
@@ -148,7 +186,7 @@ Item ids are not secret, but the list reveals usage, so it isn't written to disk
 
 | Query | Shows | Enter |
 | --- | --- | --- |
-| `pw` | `Suggest(8)`: site matches first (a heading with the host), else recent items | copy username |
+| `pw` | `Suggest(10)`: site matches first (a heading with the host), else recent items | copy username |
 | `pw <terms>` | `Search(terms, 10)` | copy username |
 | `pw <terms> user` | same results | copy username |
 | `pw <terms> pass` | same results | copy password |
@@ -156,6 +194,7 @@ Item ids are not secret, but the list reveals usage, so it isn't written to disk
 | `pw <terms> open` | same results | open the site |
 | `pw generate` | a "Generate password" row, then any items matching "generate" | generate and copy |
 | `pw lock` | a "Lock vault" row, then any items matching "lock" | lock |
+| `pw aliases` | an "Email aliases" row, then any items matching the word | open Passwords' Email aliases page |
 
 With nothing to show (bare `pw` before any copies, or no match), a help row says what to
 type. A trailing `user`, `pass`, `otp` or `open` is treated as a verb only when other terms

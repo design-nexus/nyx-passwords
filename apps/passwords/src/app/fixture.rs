@@ -11,6 +11,7 @@
 //!   PASSWORDS_TEST_SECTION=ID         the sidebar section
 //!   PASSWORDS_TEST_EDIT=1             open the editor on the selection
 //!   PASSWORDS_TEST_UNLOCK=PASSWORD    unlock a locked vault first
+//!   PASSWORDS_TEST_AGENT=1            turn every SSH key on for the agent
 
 use std::time::Duration;
 
@@ -21,7 +22,7 @@ use super::client;
 use super::ui::{self, Ui};
 
 pub fn maybe(ui: &Ui) {
-    let set_up = ["SIGNIN", "UNLOCK", "SECTION", "SELECT", "SETTINGS", "EDIT"]
+    let set_up = ["SIGNIN", "UNLOCK", "SECTION", "SELECT", "SETTINGS", "EDIT", "AGENT"]
         .iter()
         .any(|k| std::env::var_os(format!("PASSWORDS_TEST_{k}")).is_some());
     if !set_up {
@@ -56,6 +57,19 @@ pub fn maybe(ui: &Ui) {
         }
         ui::refresh_state(&ui);
         glib::timeout_future(Duration::from_millis(900)).await;
+        if std::env::var_os("PASSWORDS_TEST_AGENT").is_some() {
+            for _ in 0..40 {
+                if !ui.listing.borrow().entries.is_empty() {
+                    break;
+                }
+                glib::timeout_future(Duration::from_millis(250)).await;
+            }
+            let keys: Vec<String> =
+                ui.listing.borrow().entries.iter().filter(|e| e.kind == "ssh").map(|e| e.id.clone()).collect();
+            for id in keys {
+                let _ = client::call("SetSshAgentKey", Some((id.as_str(), true).to_variant())).await;
+            }
+        }
         if let Ok(section) = std::env::var("PASSWORDS_TEST_SECTION") {
             ui::navigate(&ui, &section);
         }

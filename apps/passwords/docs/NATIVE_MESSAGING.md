@@ -66,7 +66,8 @@ Pairing ties one browser profile to the daemon.
      pairings.
    - The extension stores `k` and the pairing id in `storage.local`.
    - Unconfirmed pairings expire after 2 minutes.
-5. **Revocation:** pairings can be revoked in the app and in Settings.
+5. **Revocation:** pairings can be revoked in the app's settings (Browsers). The Nyx
+   Settings page can't list or revoke them.
 
 ## Messages after pairing
 

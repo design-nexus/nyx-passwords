@@ -39,7 +39,7 @@ impl Scratch {
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::copy(env!("CARGO_BIN_EXE_nyx-passwordsd"), bin.join("nyx-passwordsd")).unwrap();
         let me = std::env::current_exe().unwrap();
-        for name in ["nyx-passwords", "nyx-glimpse", "stranger", "firefox"] {
+        for name in ["nyx-passwords", "nyx-glimpse", "nyx-mail", "stranger", "firefox"] {
             std::fs::copy(&me, bin.join(name)).unwrap();
         }
         std::fs::copy(env!("CARGO_BIN_EXE_nyx-passwords-bridge"), bin.join("nyx-passwords-bridge")).unwrap();
@@ -50,45 +50,18 @@ impl Scratch {
         for d in ["run", "data", "empty"] {
             std::fs::create_dir_all(dir.path().join(d)).unwrap();
         }
-        let daemon_path = bin.join("nyx-passwordsd");
-        let mut command = if keyring {
-            // `--login` makes and unlocks a "login" keyring from the password on stdin, so
-            // nothing ever asks to create one; then the daemon runs on that bus.
-            let script = format!(
-                "printf scratch | gnome-keyring-daemon --login >/dev/null && \
-                 gnome-keyring-daemon --start --components=secrets >/dev/null && exec '{}'",
-                daemon_path.display()
-            );
-            let mut c = Command::new("dbus-run-session");
-            c.args(["--", "sh", "-c", &script]).env("PATH", "/usr/bin");
-            c
-        } else {
-            let mut c = Command::new(&daemon_path);
-            c.env("PATH", dir.path().join("empty"));
-            c
-        };
-        let daemon = std::os::unix::process::CommandExt::process_group(
-            command
-                .env_remove("DBUS_SESSION_BUS_ADDRESS")
-                // No display either: a keyring prompt must never reach the user's screen.
-                .env_remove("WAYLAND_DISPLAY")
-                .env_remove("DISPLAY")
-                .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
-                .env("HOME", dir.path())
-                .env("XDG_RUNTIME_DIR", dir.path().join("run"))
-                .env("XDG_CONFIG_HOME", dir.path().join("config"))
-                .env("XDG_DATA_HOME", dir.path().join("data")),
-            0,
-        )
-        .spawn()
-        .unwrap();
+        let daemon = spawn_daemon(dir.path(), keyring);
         let s = Scratch { dir, daemon };
+        s.wait_for_socket();
+        s
+    }
+
+    fn wait_for_socket(&self) {
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !s.socket().exists() {
+        while !self.socket().exists() {
             assert!(Instant::now() < deadline, "daemon didn't start");
             std::thread::sleep(Duration::from_millis(50));
         }
-        s
     }
 
     fn socket(&self) -> PathBuf {
@@ -108,6 +81,42 @@ impl Scratch {
             text.lines().find_map(|l| l.split_once("RESULTS ").map(|(_, r)| r)).unwrap_or_else(|| panic!("{role}: {text}"));
         serde_json::from_str(line).unwrap()
     }
+}
+
+/// The daemon, from the scratch `dir`'s copy, with nothing of the user's session.
+fn spawn_daemon(dir: &Path, keyring: bool) -> Child {
+    let daemon_path = dir.join("bin/nyx-passwordsd");
+    let mut command = if keyring {
+        // `--login` makes and unlocks a "login" keyring from the password on stdin, so
+        // nothing ever asks to create one; then the daemon runs on that bus.
+        let script = format!(
+            "printf scratch | gnome-keyring-daemon --login >/dev/null && \
+                 gnome-keyring-daemon --start --components=secrets >/dev/null && exec '{}'",
+            daemon_path.display()
+        );
+        let mut c = Command::new("dbus-run-session");
+        c.args(["--", "sh", "-c", &script]).env("PATH", "/usr/bin");
+        c
+    } else {
+        let mut c = Command::new(&daemon_path);
+        c.env("PATH", dir.join("empty"));
+        c
+    };
+    std::os::unix::process::CommandExt::process_group(
+        command
+            .env_remove("DBUS_SESSION_BUS_ADDRESS")
+            // No display either: a keyring prompt must never reach the user's screen.
+            .env_remove("WAYLAND_DISPLAY")
+            .env_remove("DISPLAY")
+            .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
+            .env("HOME", dir)
+            .env("XDG_RUNTIME_DIR", dir.join("run"))
+            .env("XDG_CONFIG_HOME", dir.join("config"))
+            .env("XDG_DATA_HOME", dir.join("data")),
+        0,
+    )
+    .spawn()
+    .unwrap()
 }
 
 impl Scratch {
@@ -143,7 +152,10 @@ impl Scratch {
         assert_eq!(replies[0]["result"]["serverInfo"]["name"], "nyx-passwords");
         let tools: Vec<&str> =
             replies[1]["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(tools, ["passwords.find", "passwords.copy"]);
+        assert_eq!(
+            tools,
+            ["passwords.find", "passwords.copy", "passwords.generate", "passwords.security_summary", "passwords.open"]
+        );
         replies[2..].iter().map(|r| r["result"].clone()).collect()
     }
 }
@@ -189,17 +201,32 @@ async fn call_one(conn: &zbus::Connection, call: &[Value]) -> Value {
     let reply = match method {
         "Status" | "Lock" | "Sync" | "List" | "Generate" | "SignOut" | "Pairings" | "KeyringUnlock" | "UnlockWithKeyring"
         | "Revision" | "SignInRequests" | "PollDeviceSignIn" | "GeneratorHistory" | "EmergencyContacts" | "Outdated"
-        | "Restart" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &()).await,
-        "Search" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(s(1), call[2].as_u64().unwrap() as u32)).await,
-        "Copy" | "Reveal" | "UpdateLogin" | "MoveItems" | "RenameFolder" | "RequestDeviceSignIn" => {
+        | "Restart" | "Recent" | "AliasServices" | "SecuritySummary" | "Approvals" | "SshAgentKeys" | "Hygiene"
+        | "GenerateSshKey" | "TravelMode" | "AccessStatus" | "Grants" | "Activity" => {
+            conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &()).await
+        }
+        "Search" | "AppSearch" => {
+            conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(s(1), call[2].as_u64().unwrap() as u32)).await
+        }
+        "RequestAccess" => {
+            conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(s(1), s(2), call[3].as_u64().unwrap() as u32)).await
+        }
+        "Copy" | "Reveal" | "UpdateLogin" | "MoveItems" | "RenameFolder" | "RequestDeviceSignIn" | "AppCopy" => {
             conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(s(1), s(2))).await
         }
         "Unlock" | "CreateLogin" | "OpenUrl" | "Trash" | "Restore" | "VerifyPassword" | "ConfirmPairing" | "RemovePairing"
         | "Totp" | "GenerateUsername" | "CreateItem" | "CreateFolder" | "DeleteFolder" | "History" | "TrashItems"
-        | "RestoreItems" | "DeleteForever" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(s(1),)).await,
+        | "RestoreItems" | "DeleteForever" | "OpenedItem" | "ListAliases" | "ItemAlias" | "CreateAlias" | "RevokeGrant" => {
+            conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(s(1),)).await
+        }
         "SignIn" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(s(1), s(2), s(3), 255u8, String::new())).await,
         "Attachments" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(s(1),)).await,
         "SetKeyringUnlock" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(call[1].as_bool().unwrap(),)).await,
+        "SetTravelMode" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(call[1].as_bool().unwrap(),)).await,
+        "SetSshAgentKey" => {
+            conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(s(1), call[2].as_bool().unwrap())).await
+        }
+        "Answer" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(call[1].as_u64().unwrap(), s(2))).await,
         "DeleteAttachment" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(s(1), s(2))).await,
         // [method, id, name or attachment, path]: the file goes as a handle.
         // [method, format or password…, path]: the file goes as a handle.
@@ -453,6 +480,40 @@ async fn signed_in_vault() {
     assert_eq!(err(&app[0]), "Failed");
     assert_eq!(ok(&app[2]).as_array().unwrap().len(), 1);
 
+    // Glimpse's copy made it recently used; the list outlasts the lock (kept encrypted
+    // beside the vault) and is the app's alone.
+    let app = s.as_peer("nyx-passwords", json!([["Recent"], ["OpenedItem", "not-an-id"]]));
+    assert_eq!(ok(&app[0]).as_str().unwrap(), json!([id]).to_string());
+    assert_eq!(err(&app[1]), "NotFound");
+    let g = s.as_peer("nyx-glimpse", json!([["Recent"], ["OpenedItem", id]]));
+    assert_eq!((err(&g[0]), err(&g[1])), ("Denied", "Denied"));
+
+    // Email aliases: the services and what each can do; a login records its alias in
+    // `nyx:alias`, and its status is unknown until the service is asked. Only the app.
+    let linked = json!({"name": "Shop", "username": "x5@fastmail.example", "password": "canary-shop-Pw!9",
+                        "custom": [{"name": "nyx:alias", "value": "fastmail:m5", "kind": 0}]})
+    .to_string();
+    let app = s.as_peer("nyx-passwords", json!([["AliasServices"], ["CreateLogin", linked]]));
+    let services: Value = serde_json::from_str(ok(&app[0]).as_str().unwrap()).unwrap();
+    let find = |id: &str| services.as_array().unwrap().iter().find(|s| s["id"] == id).cloned().unwrap();
+    assert_eq!((find("fastmail")["toggle"].as_bool(), find("duckduckgo")["list"].as_bool()), (Some(true), Some(false)));
+    let shop = ok(&app[1]).as_str().unwrap().to_string();
+    let app = s.as_peer("nyx-passwords", json!([["ItemAlias", shop], ["ItemAlias", id], ["List"]]));
+    let alias: Value = serde_json::from_str(ok(&app[0]).as_str().unwrap()).unwrap();
+    assert_eq!(
+        alias,
+        json!({"service": "fastmail", "name": "Fastmail", "id": "m5", "email": "x5@fastmail.example", "enabled": null})
+    );
+    assert_eq!(ok(&app[1]), "null");
+    assert!(ok(&app[2]).as_str().unwrap().contains(r#""alias":"fastmail:m5""#));
+    let g = s.as_peer(
+        "nyx-glimpse",
+        json!([["AliasServices"], ["ListAliases", "fastmail"], ["ItemAlias", shop], ["CreateAlias", "https://shop.example"]]),
+    );
+    for reply in &g {
+        assert_eq!(err(reply), "Denied", "{reply}");
+    }
+
     // An item that asks for the master password again: Glimpse never gets its secrets,
     // the app only after confirming the password.
     let guarded = json!({"name": "Bank", "username": "me", "password": "canary-guarded-Pw!9", "reprompt": true}).to_string();
@@ -526,6 +587,48 @@ async fn signed_in_vault() {
     assert!(got[3]["content"][0]["text"].as_str().unwrap().contains("no login matches"));
     assert!(!Value::Array(got.clone()).to_string().contains("canary"));
 
+    // Generating copies (and here fails, with no compositor); the summary is counts only;
+    // opening needs one login.
+    let got = s.assistant(&[
+        ("passwords.generate", json!({})),
+        ("passwords.security_summary", json!({})),
+        ("passwords.open", json!({"query": "nothing like this"})),
+        ("passwords.open", json!({"id": "../../etc"})),
+    ]);
+    assert_eq!(got[0]["isError"], true);
+    let summary = &got[1]["structuredContent"];
+    assert!(summary["logins"].as_u64().unwrap() >= 2, "{summary}");
+    let keys: Vec<&str> = summary.as_object().unwrap().keys().map(String::as_str).collect();
+    assert_eq!(keys, ["flagged", "logins", "old", "reused", "weak"]);
+    assert!(got[2]["content"][0]["text"].as_str().unwrap().contains("no login matches"));
+    assert!(got[3]["content"][0]["text"].as_str().unwrap().contains("isn't a login's id"));
+    let g = s.as_peer("nyx-glimpse", json!([["SecuritySummary"]]));
+    assert_eq!(err(&g[0]), "Denied");
+
+    ssh_agent(&s, password);
+    app_access(&s, &id);
+
+    // Travel Mode: on at once; off only with the master password confirmed just before.
+    let marked = json!({"name": "Embassy", "username": "me", "password": "canary-travel-Pw!9",
+                        "custom": [{"name": "nyx:travel", "value": "true", "kind": 2}]})
+    .to_string();
+    let app =
+        s.as_peer("nyx-passwords", json!([["CreateLogin", marked], ["TravelMode"], ["SetTravelMode", true], ["TravelMode"]]));
+    let embassy = ok(&app[0]).as_str().unwrap().to_string();
+    assert_eq!(ok(&app[1]), r#"{"marked":1,"on":false}"#);
+    assert_eq!(ok(&app[2]), 1);
+    assert_eq!(ok(&app[3]), r#"{"marked":0,"on":true}"#);
+    let g = s.as_peer("nyx-glimpse", json!([["Search", "embassy", 5], ["SetTravelMode", false], ["TravelMode"]]));
+    assert_eq!(ok(&g[0]).as_array().unwrap().len(), 0, "gone from search too");
+    assert_eq!((err(&g[1]), err(&g[2])), ("Denied", "Denied"));
+    let app = s.as_peer(
+        "nyx-passwords",
+        json!([["SetTravelMode", false], ["VerifyPassword", password], ["SetTravelMode", false], ["Search", "embassy", 5]]),
+    );
+    assert_eq!(err(&app[0]), "Reprompt");
+    ok(&app[2]);
+    assert_eq!(ok(&app[3])[0][0], embassy.as_str(), "back after a sync");
+
     // Nothing decrypted reached the disk.
     for path in walk(s.dir.path()) {
         if !path.starts_with(s.dir.path().join("bin")) {
@@ -534,6 +637,225 @@ async fn signed_in_vault() {
             assert!(!text.contains("canary-daemon") && !text.contains("canary-guarded"), "{}", path.display());
         }
     }
+}
+
+/// Answers the next approval as the window would, once one is waiting.
+fn answer_next(s: &Scratch, answer: &str) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let app = s.as_peer("nyx-passwords", json!([["Approvals"]]));
+        let list: Value = serde_json::from_str(ok(&app[0]).as_str().unwrap()).unwrap();
+        if let Some(first) = list.as_array().unwrap().first().cloned() {
+            let app = s.as_peer("nyx-passwords", json!([["Answer", first["id"], answer]]));
+            ok(&app[0]);
+            return first;
+        }
+        assert!(Instant::now() < deadline, "nothing asked for approval");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Another Nyx app: nothing until it asks and the user allows; then only what was
+/// granted, never a value back; revocable; logged without values.
+fn app_access(s: &Scratch, github: &str) {
+    let mail = s.as_peer(
+        "nyx-mail",
+        json!([
+            ["Search", "git", 5],
+            ["AppSearch", "git", 5],
+            ["AccessStatus"],
+            ["List"],
+            ["Reveal", github, "password"],
+            ["Grants"]
+        ]),
+    );
+    for (i, reply) in mail.iter().enumerate() {
+        if i == 2 {
+            assert_eq!(ok(reply), "null");
+        } else {
+            assert_eq!(err(reply), "Denied", "{i}: {reply}");
+        }
+    }
+    let bad = s.as_peer("nyx-mail", json!([["RequestAccess", "[\"reveal\"]", "", 60]]));
+    assert_eq!(err(&bad[0]), "Failed");
+
+    // Allowed for the time asked: search and copy without asking again.
+    let (got, asked) = std::thread::scope(|scope| {
+        let asking =
+            scope.spawn(|| s.as_peer("nyx-mail", json!([["RequestAccess", "[\"search\",\"copy\"]", "Fill in mail logins", 60]])));
+        let asked = answer_next(s, "session");
+        (asking.join().unwrap(), asked)
+    });
+    assert!(asked["title"].as_str().unwrap().contains("nyx-mail"));
+    assert!(
+        asked["detail"].as_str().unwrap().contains("Fill in mail logins")
+            && asked["detail"].as_str().unwrap().contains("an hour")
+    );
+    let granted: Value = serde_json::from_str(ok(&got[0]).as_str().unwrap()).unwrap();
+    assert_eq!((granted["granted"].as_bool(), granted["ask_each_copy"].as_bool()), (Some(true), Some(false)));
+    let mail = s.as_peer(
+        "nyx-mail",
+        json!([
+            ["AppSearch", "git", 5],
+            ["AppCopy", github, "password"],
+            ["Reveal", github, "password"],
+            ["Copy", github, "password"]
+        ]),
+    );
+    assert_eq!(ok(&mail[0])[0][0], github);
+    assert!(!mail[0].to_string().contains("canary"));
+    assert_eq!(err(&mail[1]), "Clipboard", "allowed; no compositor here to copy to");
+    assert_eq!((err(&mail[2]), err(&mail[3])), ("Denied", "Denied"), "only what was granted");
+
+    // Asking before each copy: a refusal is a refusal.
+    let app = s.as_peer("nyx-passwords", json!([["RevokeGrant", "nyx-mail"], ["Grants"]]));
+    assert_eq!(ok(&app[1]), "[]");
+    assert_eq!(err(&s.as_peer("nyx-mail", json!([["AppSearch", "git", 5]]))[0]), "Denied", "revoked at once");
+    std::thread::scope(|scope| {
+        let asking = scope.spawn(|| s.as_peer("nyx-mail", json!([["RequestAccess", "[\"copy\"]", "", 30]])));
+        answer_next(s, "once");
+        let got = asking.join().unwrap();
+        assert!(ok(&got[0]).as_str().unwrap().contains(r#""ask_each_copy":true"#));
+    });
+    std::thread::scope(|scope| {
+        let copying = scope.spawn(|| s.as_peer("nyx-mail", json!([["AppCopy", github, "password"]])));
+        let asked = answer_next(s, "deny");
+        assert!(asked["title"].as_str().unwrap().contains("copy a password"), "{asked}");
+        assert_eq!(err(&copying.join().unwrap()[0]), "Denied");
+    });
+
+    // The activity log: who, what, which item, the outcome; no values, no names.
+    let app = s.as_peer("nyx-passwords", json!([["Activity"]]));
+    let log = ok(&app[0]).as_str().unwrap().to_string();
+    assert!(log.contains("nyx-mail") && log.contains("copy password") && log.contains("denied") && log.contains(github));
+    assert!(!log.contains("canary") && !log.contains("GitHub"), "{log}");
+}
+
+/// One request to the SSH agent socket and its answer's body.
+fn agent_request(socket: &Path, body: &[u8]) -> Vec<u8> {
+    use std::io::{Read, Write};
+    let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(90))).unwrap();
+    stream.write_all(&(body.len() as u32).to_be_bytes()).unwrap();
+    stream.write_all(body).unwrap();
+    let mut len = [0u8; 4];
+    stream.read_exact(&mut len).unwrap();
+    let mut reply = vec![0u8; u32::from_be_bytes(len) as usize];
+    stream.read_exact(&mut reply).unwrap();
+    reply
+}
+
+fn sign_request(blob: &[u8]) -> Vec<u8> {
+    let mut body = vec![13u8];
+    body.extend((blob.len() as u32).to_be_bytes());
+    body.extend(blob);
+    body.extend(4u32.to_be_bytes());
+    body.extend_from_slice(b"data");
+    body.extend(0u32.to_be_bytes());
+    body
+}
+
+/// Signs on another thread while this one answers the approval as the window would.
+fn sign_answering(s: &Scratch, socket: &Path, blob: &[u8], answer: Option<&str>) -> Vec<u8> {
+    let (socket, request) = (socket.to_path_buf(), sign_request(blob));
+    let signing = std::thread::spawn(move || agent_request(&socket, &request));
+    if let Some(answer) = answer {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let waiting = loop {
+            let app = s.as_peer("nyx-passwords", json!([["Approvals"]]));
+            let list: Value = serde_json::from_str(ok(&app[0]).as_str().unwrap()).unwrap();
+            if let Some(first) = list.as_array().unwrap().first() {
+                break first.clone();
+            }
+            assert!(Instant::now() < deadline, "nothing asked for approval");
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        assert!(waiting["title"].as_str().unwrap().contains("Deploy key"), "{waiting}");
+        assert!(!waiting.to_string().contains("PRIVATE KEY"));
+        let g = s.as_peer("nyx-glimpse", json!([["Approvals"], ["Answer", waiting["id"], "once"]]));
+        assert_eq!((err(&g[0]), err(&g[1])), ("Denied", "Denied"), "only the window answers");
+        let app = s.as_peer("nyx-passwords", json!([["Answer", waiting["id"], answer]]));
+        ok(&app[0]);
+    }
+    signing.join().unwrap()
+}
+
+/// The SSH agent: nothing until it's turned on and the key is chosen; then each
+/// signature waits for the window's answer, once or until the vault locks.
+fn ssh_agent(s: &Scratch, password: &str) {
+    let socket = s.dir.path().join("run/nyx-passwords/ssh-agent.sock");
+    let app = s.as_peer("nyx-passwords", json!([["GenerateSshKey"]]));
+    let made: Value = serde_json::from_str(ok(&app[0]).as_str().unwrap()).unwrap();
+    let draft = json!({"kind": "ssh", "name": "Deploy key", "fields": {"ssh.privateKey": made["private"]}}).to_string();
+    let app = s.as_peer("nyx-passwords", json!([["CreateItem", draft]]));
+    let key = ok(&app[0]).as_str().unwrap().to_string();
+    let blob = nyx_passwords_core::ssh::blob_from_public(made["public"].as_str().unwrap()).unwrap();
+
+    // Off: no keys. On, but the key not chosen: still none.
+    assert_eq!(agent_request(&socket, &[11]), [12, 0, 0, 0, 0]);
+    let settings = s.dir.path().join("config/nyx-passwords/settings.toml");
+    let text = std::fs::read_to_string(&settings).unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    std::fs::write(&settings, format!("{text}ssh_agent = true\n")).unwrap();
+    assert_eq!(agent_request(&socket, &[11]), [12, 0, 0, 0, 0]);
+    let g = s.as_peer("nyx-glimpse", json!([["SetSshAgentKey", key, true]]));
+    assert_eq!(err(&g[0]), "Denied");
+    let app = s.as_peer("nyx-passwords", json!([["SetSshAgentKey", key, true], ["SshAgentKeys"]]));
+    assert_eq!(ok(&app[1]), &json!([key]).to_string());
+    let listed = agent_request(&socket, &[11]);
+    assert_eq!((listed[0], &listed[1..5]), (12, &1u32.to_be_bytes()[..]));
+    assert!(listed.windows(blob.len()).any(|w| w == blob.as_slice()) && listed.ends_with(b"Deploy key"));
+
+    // Allowed once: a signature (type 14). Denied: failure (5). Unknown key: failure.
+    assert_eq!(sign_answering(s, &socket, &blob, Some("once"))[0], 14);
+    assert_eq!(sign_answering(s, &socket, &blob, Some("deny")), [5]);
+    assert_eq!(sign_answering(s, &socket, b"not a key", None), [5]);
+    // Until locked: asked once, then not again.
+    assert_eq!(sign_answering(s, &socket, &blob, Some("session"))[0], 14);
+    assert_eq!(sign_answering(s, &socket, &blob, None)[0], 14);
+    // Adding keys and the rest of the protocol are refused.
+    assert_eq!(agent_request(&socket, &[17, 0, 0, 0, 0]), [5]);
+
+    // OpenSSH itself: ssh-add lists the key; ssh-keygen signs through the agent (after
+    // approval: it's another program) and the signature verifies.
+    let public = made["public"].as_str().unwrap();
+    let listed = Command::new("ssh-add").arg("-L").env("SSH_AUTH_SOCK", &socket).output().unwrap();
+    assert!(String::from_utf8_lossy(&listed.stdout).contains(public.split(' ').nth(1).unwrap()), "{listed:?}");
+    let work = s.dir.path().join("openssh");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(work.join("key.pub"), format!("{public}\n")).unwrap();
+    std::fs::write(work.join("data"), "signed by the agent\n").unwrap();
+    std::thread::scope(|scope| {
+        let signing = scope.spawn(|| {
+            Command::new("ssh-keygen")
+                .args(["-Y", "sign", "-n", "file", "-f"])
+                .arg(work.join("key.pub"))
+                .arg(work.join("data"))
+                .env("SSH_AUTH_SOCK", &socket)
+                .output()
+                .unwrap()
+        });
+        let asked = answer_next(s, "once");
+        assert!(asked["program"].as_str().unwrap().ends_with("ssh-keygen"), "{asked}");
+        let out = signing.join().unwrap();
+        assert!(out.status.success(), "{out:?}");
+    });
+    let check = Command::new("ssh-keygen")
+        .args(["-Y", "check-novalidate", "-n", "file", "-s"])
+        .arg(work.join("data.sig"))
+        .stdin(std::fs::File::open(work.join("data")).unwrap())
+        .output()
+        .unwrap();
+    assert!(check.status.success(), "{check:?}");
+
+    // Locked: no keys, and what was allowed is gone.
+    let app = s.as_peer("nyx-passwords", json!([["Lock"]]));
+    ok(&app[0]);
+    assert_eq!(agent_request(&socket, &[11]), [12, 0, 0, 0, 0]);
+    let app = s.as_peer("nyx-passwords", json!([["Unlock", password]]));
+    ok(&app[0]);
+    let after = sign_answering(s, &socket, &blob, Some("deny"));
+    assert_eq!(after, [5], "asked again after the lock");
 }
 
 fn walk(dir: &Path) -> Vec<PathBuf> {

@@ -10,7 +10,7 @@ export CARGO=$cargo RUSTC=$(rustup which rustc --toolchain "$toolchain") PATH=$(
 seconds=${1:-60}
 shift || true
 targets=("$@")
-[[ ${#targets[@]} -gt 0 ]] || targets=(sync enc_string pairing totp matching ssh)
+[[ ${#targets[@]} -gt 0 ]] || targets=(sync enc_string pairing totp matching ssh ssh_agent)
 for t in "${targets[@]}"; do
   mkdir -p "corpus/$t"
   echo "== $t (${seconds} s)"

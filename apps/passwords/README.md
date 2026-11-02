@@ -18,9 +18,25 @@ requests to sign in from Passwords.
 
 ## What it does
 
-- Lists logins, secure notes, cards, identities and SSH keys by type, folder and
-  collection, with favorites, search and a trash with Undo. Items in the trash can be
-  deleted for good, one at a time or by emptying the trash.
+- Lists logins, secure notes, cards, identities and SSH keys by type, template, folder
+  and collection, with favorites, recently used items (copied here, in Glimpse or a
+  browser, or opened), search and a trash with Undo. Items in the trash can be deleted
+  for good, one at a time or by emptying the trash.
+- Templates lay out new items: SSH credential, API key, Wi-Fi network, server,
+  database, email account, software license, financial account, identification
+  document, recovery codes and custom record, plus your own (Settings → Templates).
+  They're ordinary Bitwarden items with named custom fields, so every Bitwarden app
+  shows the same information.
+- A login's web addresses each have their match rule (base domain, host, starts with,
+  exact, regular expression, never), and its Android apps are listed by package name
+  (`com.instagram.android`), stored as Bitwarden Android expects. See
+  [docs/ANDROID.md](docs/ANDROID.md).
+- Email aliases (sidebar → Email aliases): list a service's aliases with the logins
+  that use them, copy one, turn one off (after asking) or on, and delete one, for
+  Fastmail, SimpleLogin, addy.io, Firefox Relay, Forward Email and Cloudflare Email
+  Routing. An alias made in the editor is remembered by its login, which shows it and
+  whether it's on. A Fastmail account in Nyx Online Accounts makes Fastmail the
+  suggested service; masked email still needs its own Fastmail API token.
 - Folders are made in the sidebar ("New folder"), and renamed or deleted by
   right-clicking them. Ctrl- or Shift-click picks several items at once, to move them
   to a folder, to the trash, or out of it.
@@ -32,8 +48,8 @@ requests to sign in from Passwords.
   custom fields included (text, hidden, or true or false), with a password and
   passphrase generator, and a username generator: a random word, your email with a
   tag, an address at your catch-all domain, or a new alias from SimpleLogin, addy.io,
-  Firefox Relay, DuckDuckGo, Fastmail or Forward Email (with your API token, kept in the
-  keyring). What the generators made stays listed until the vault locks. SSH keys are generated (Ed25519) or imported from an OpenSSH
+  Firefox Relay, DuckDuckGo, Fastmail, Forward Email or Cloudflare Email Routing (with
+  your API token, kept in the keyring). What the generators made stays listed until the vault locks. SSH keys are generated (Ed25519) or imported from an OpenSSH
   private key file, with its passphrase if it has one. An edit made in another app in
   the meantime is caught instead of overwritten.
 - Honors "ask for master password" on items, and an organization's permissions:
@@ -43,9 +59,21 @@ requests to sign in from Passwords.
 - Nyx Assistant can find logins and copy them ("copy my password for GitHub") once
   you turn that on in Passwords' settings. It asks for a key press each time and never
   sees a password.
-- A Security section lists logins with weak, reused or year-old passwords, worked out
-  on your computer. On request it checks them against Have I Been Pwned's breach data
-  without sending the passwords (only the first five characters of each hash).
+- A Security section lists logins with weak, reused or year-old passwords, `http://`
+  addresses, likely duplicates and records missing something, worked out on your
+  computer. On request it checks passwords against Have I Been Pwned's breach data
+  without sending them (only the first five characters of each hash), and finds sites
+  that offer two-step login you don't use (2fa.directory's public list, downloaded
+  whole). Each item says what to do, with a button that does it.
+- SSH agent (Settings → SSH agent, off by default): ssh and git can use the SSH keys you
+  turn on for it. Each use asks you first, once or until the vault locks; the private
+  key never leaves Passwords. Point `SSH_AUTH_SOCK` at the socket the setting shows.
+- Travel Mode (Settings → Travel Mode): items marked travel-sensitive leave this
+  device until you turn it off with your master password. They stay on your server and
+  other devices; the setting says what it can't protect against.
+- Other Nyx apps can ask to find logins or copy one to the clipboard; you approve each
+  app (and, if you like, each copy), for a set time. Settings → App access lists them,
+  revokes them, and shows what other programs did with the vault.
 - Emergency access (Settings → Emergency access): invite people you trust, confirm them
   after comparing fingerprint phrases, approve or reject their requests; and ask for
   access to vaults others trust you with, then view them read-only. Taking over an

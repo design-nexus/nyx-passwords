@@ -30,7 +30,7 @@ pub struct LoginDraft {
     pub password: Option<Secret>,
     /// An `otpauth://` URI or a base32 secret.
     pub totp: Option<Secret>,
-    pub uris: Vec<Secret>,
+    pub uris: Vec<UriDraft>,
     pub notes: Option<Secret>,
     pub folder: Option<Uuid>,
     pub favorite: bool,
@@ -39,6 +39,20 @@ pub struct LoginDraft {
     pub place: Place,
     /// The custom fields as edited; `None` leaves them as they are.
     pub custom: Option<Vec<CustomDraft>>,
+}
+
+/// A login's address as edited: a web address or an Android app (`androidapp://…`).
+pub struct UriDraft {
+    pub uri: Secret,
+    /// Its match rule (`matching::DOMAIN` …). `None` keeps the rule the same address
+    /// had in the item, if any; `Some(None)` is the account's default.
+    pub rule: Option<Option<i64>>,
+}
+
+impl From<Secret> for UriDraft {
+    fn from(uri: Secret) -> Self {
+        UriDraft { uri, rule: None }
+    }
 }
 
 /// A custom field as edited. `kind`: 0 text, 1 hidden, 2 true or false (`value` is
@@ -578,7 +592,7 @@ impl Session {
                     username: username.map(Secret::new),
                     password: None,
                     totp: None,
-                    uris: vec![Secret::new(page.origin().ascii_serialization())],
+                    uris: vec![Secret::new(page.origin().ascii_serialization()).into()],
                     notes: None,
                     folder: None,
                     favorite: false,
@@ -687,6 +701,13 @@ impl Session {
 
     /// Puts the server's copy of an item into the store, the snapshot and the view.
     pub(crate) fn take(&mut self, store: &mut Store, cipher: Cipher) -> Result<()> {
+        // Marked while Travel Mode is on: the server has it; this device doesn't keep it.
+        if store.travel()? && crate::travel::marked(&self.keys, &cipher) {
+            store.remove_cipher(cipher.id)?;
+            self.view.remove(cipher.id);
+            self.snapshot.ciphers.retain(|c| c.id != cipher.id);
+            return Ok(());
+        }
         store.put_cipher(&cipher)?;
         self.view.put(&self.keys, &cipher);
         match self.snapshot.ciphers.iter_mut().find(|c| c.id == cipher.id) {
@@ -835,9 +856,10 @@ fn ssh_fields(draft: &ItemDraft) -> Result<Vec<(&'static str, Secret)>> {
     ])
 }
 
-/// The login part of a request. A web address that was already there keeps its match
-/// rule and other settings; each one carries the checksum official clients check. The
-/// password's date moves only when the password itself changed.
+/// The login part of a request. A web address that was already there keeps its other
+/// settings, and its match rule unless the draft sets one; each one carries the checksum
+/// official clients check. The password's date moves only when the password itself
+/// changed.
 fn fill_login(key: &mut ItemKey, mut login: Login, old: Option<&Login>, draft: &LoginDraft, new_password: bool) -> Result<Login> {
     login.username = encrypt_opt(key, draft.username.as_ref())?;
     login.password = encrypt_opt(key, draft.password.as_ref())?;
@@ -849,10 +871,13 @@ fn fill_login(key: &mut ItemKey, mut login: Login, old: Option<&Login>, draft: &
         }
     }
     let mut uris = Vec::new();
-    for uri in draft.uris.iter().filter(|u| !u.expose().trim().is_empty()) {
-        let text = uri.expose().trim();
+    for uri in draft.uris.iter().filter(|u| !u.uri.expose().trim().is_empty()) {
+        let text = uri.uri.expose().trim();
         let kept = previous.iter().find(|(plain, _)| plain.expose() == text).map(|(_, u)| (*u).clone());
         let mut entry = kept.unwrap_or(LoginUri { uri: None, uri_checksum: None, match_rule: None, extra: Default::default() });
+        if let Some(rule) = uri.rule {
+            entry.match_rule = rule;
+        }
         entry.uri = Some(key.encrypt(text)?);
         entry.uri_checksum = Some(key.encrypt(uri_checksum(text).expose())?);
         uris.push(entry);

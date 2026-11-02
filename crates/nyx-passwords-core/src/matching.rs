@@ -70,6 +70,38 @@ fn web_url(uri: &str) -> Option<Url> {
     matches!(parsed.scheme(), "http" | "https").then_some(parsed)
 }
 
+/// How Bitwarden clients write an Android app's address: `androidapp://<package>`.
+pub const ANDROID_SCHEME: &str = "androidapp://";
+
+/// The package name in an `androidapp://` address, if it is one with a valid name.
+pub fn android_package(uri: &str) -> Option<&str> {
+    let uri = uri.trim();
+    let package = uri
+        .get(..ANDROID_SCHEME.len())
+        .filter(|s| s.eq_ignore_ascii_case(ANDROID_SCHEME))
+        .map(|_| &uri[ANDROID_SCHEME.len()..])?;
+    valid_android_package(package).then_some(package)
+}
+
+/// The address Bitwarden Android matches for `package` (`com.example.app`), or `None`
+/// if it isn't a valid package name. A pasted `androidapp://` address is taken as is.
+pub fn android_uri(package: &str) -> Option<String> {
+    let package = package.trim();
+    let package = android_package(package).unwrap_or(package);
+    valid_android_package(package).then(|| format!("{ANDROID_SCHEME}{package}"))
+}
+
+/// Android's rule for application ids: at least two dot-separated parts, each starting
+/// with a letter and holding only letters, digits and underscores.
+pub fn valid_android_package(package: &str) -> bool {
+    package.len() <= 255
+        && package.split('.').count() >= 2
+        && package.split('.').all(|part| {
+            let mut chars = part.chars();
+            chars.next().is_some_and(|c| c.is_ascii_alphabetic()) && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+}
+
 /// The registrable domain ("example.co.uk" for "login.example.co.uk"), lowercase. An
 /// IP address, `localhost` or a name without a public suffix is its own base domain.
 pub fn base_domain(host: &str) -> String {
@@ -181,6 +213,27 @@ mod tests {
         assert!(!matches(Some(REGEX), "(unclosed", &p));
         assert!(!matches(Some(NEVER), "https://login.example.com:8443", &p));
         assert!(!matches(Some(42), "https://login.example.com:8443", &p));
+    }
+
+    #[test]
+    fn android_apps() {
+        assert_eq!(android_package("androidapp://com.instagram.android"), Some("com.instagram.android"));
+        assert_eq!(android_package(" AndroidApp://com.example.app_2 "), Some("com.example.app_2"));
+        assert_eq!(android_package("https://com.instagram.android"), None);
+        assert_eq!(android_package("androidapp://"), None);
+        assert_eq!(android_package("androidapp://instagram"), None);
+        assert_eq!(android_package("androidapp://com..x"), None);
+        assert_eq!(android_package("androidapp://com.1x"), None);
+        assert_eq!(android_package("androidapp://com.x/y"), None);
+        assert_eq!(android_uri("com.instagram.android").as_deref(), Some("androidapp://com.instagram.android"));
+        assert_eq!(android_uri("androidapp://com.x.y").as_deref(), Some("androidapp://com.x.y"));
+        assert_eq!(android_uri("com.x-y.z"), None);
+        assert_eq!(android_uri(&format!("a.{}", "b".repeat(254))), None);
+        // Never a web match, under any rule.
+        let p = page("https://instagram.com/");
+        for rule in [DOMAIN, HOST, STARTS_WITH, EXACT, REGEX] {
+            assert!(!matches(Some(rule), "androidapp://com.instagram.android", &p));
+        }
     }
 
     #[test]

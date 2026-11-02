@@ -37,7 +37,7 @@ fn login(name: &str) -> LoginDraft {
         username: Some(Secret::new("octo")),
         password: Some(Secret::new(format!("canary-{name}-Pw!9"))),
         totp: None,
-        uris: vec![Secret::new("https://example.com")],
+        uris: vec![Secret::new("https://example.com").into()],
         notes: None,
         folder: None,
         favorite: false,
