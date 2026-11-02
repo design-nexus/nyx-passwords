@@ -184,6 +184,9 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> Ui {
     vault.append(&panes);
     let list = gtk::ListBox::new();
     list.set_selection_mode(gtk::SelectionMode::Multiple);
+    // With single-click activation, a plain click adds its row to the selection instead
+    // of replacing it, and never unselects one; Ctrl and Shift only work without it.
+    list.set_activate_on_single_click(false);
     list.add_css_class("item-list");
     let list_scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
