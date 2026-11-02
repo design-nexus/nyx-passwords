@@ -184,7 +184,7 @@ impl Vault {
     }
 
     /// A site's icon, when website icons are turned on.
-    pub async fn icon(&self, scope: Scope, host: &str) -> Result<Vec<u8>> {
+    pub async fn icon(&self, scope: Scope, host: &str, wait: Option<std::time::Duration>) -> Result<Vec<u8>> {
         need(scope, Scope::App)?;
         let server = {
             let mut st = self.state.lock().await;
@@ -194,7 +194,7 @@ impl Vault {
             st.session.as_ref().ok_or_else(locked)?;
             st.server.clone().ok_or_else(|| Failure::new(Code::Failed, "no server"))?
         };
-        self.icons.get(&server, host).await
+        self.icons.get(&server, host, wait).await
     }
 
     pub async fn settings(&self) -> Settings {

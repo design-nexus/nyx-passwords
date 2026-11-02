@@ -1005,8 +1005,15 @@ fn browser() {
             let frame = if request["replay"] == true {
                 last.clone().unwrap()
             } else {
-                counter += 1;
-                let n = if request["stale"] == true { counter - 10 * 60 * 1000 } else { counter };
+                // Steps of two, so `behind` has an unused counter below the last one.
+                counter += 2;
+                let n = if request["stale"] == true {
+                    counter - 10 * 60 * 1000
+                } else if request["behind"] == true {
+                    counter - 3
+                } else {
+                    counter
+                };
                 let mut nonce = [0u8; 12];
                 rand::Rng::fill_bytes(&mut rand::rng(), &mut nonce);
                 let aad = format!("{id}|{n}");
@@ -1130,6 +1137,7 @@ async fn paired_browser() {
         {"replay": true},
         {"r": "status", "stale": true},
         {"r": "context", "url": page},
+        {"r": "status", "behind": true},
     ]);
     let r = s.as_browser(&requests.to_string());
     assert_eq!(r[0]["state"], "unlocked");
@@ -1148,6 +1156,7 @@ async fn paired_browser() {
     assert_eq!(r[8]["items"], json!([]), "a lookalike domain");
     assert_eq!(r[9]["t"], "error", "a replayed frame");
     assert_eq!(r[10]["t"], "error", "a stale counter");
+    assert_eq!(r[12]["state"], "unlocked", "sealed before the one ahead of it");
     // Saving from the page: a new login, then a new password for the same username.
     let r = s.as_browser(
         &json!([

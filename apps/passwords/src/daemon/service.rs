@@ -110,7 +110,7 @@ impl Service {
 
     /// A site's icon (website icons must be turned on); `NoField` when it has none.
     async fn icon(&self, host: String) -> Result<Vec<u8>, Error> {
-        Ok(self.vault.icon(self.scope, &host).await?)
+        Ok(self.vault.icon(self.scope, &host, None).await?)
     }
 
     /// Goes up with each sync applied, so the window knows when to list again.
