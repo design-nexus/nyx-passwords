@@ -134,6 +134,8 @@ vault, read back on unlock, dropped from memory on lock and removed on sign-out.
 | `Export` | `(s format, s password, h file) → ()` | `json`, `csv`, `password_json` (needs `password`), `account_json`. Personal items, not the trash or attachments. Needs `VerifyPassword` within the last five minutes (`Reprompt` otherwise). `file` is a handle the app opened where the user chose |
 | `ImportPreview` | `(s password, h file) → s` | JSON `{format, items, folders, counts}`; the format is told from the contents. `NeedsPassword` for a protected export without (or with a wrong) password |
 | `Import` | `(s password, h file) → u count` | Adds the items as personal ones (folders made as needed), then syncs |
+| `WifiNetworks` | `() → s` | JSON list of NetworkManager's saved Wi-Fi networks: `uuid`, `name`, `ssid`, `security`, `hidden`, `why_not` (null if importable), `already_saved`. No passwords |
+| `ImportWifi` | `(s uuids) → u count` | JSON list of `uuid`s; saves each importable, not yet saved network as a Wi-Fi network item, its password read by the daemon |
 | `Trash`, `Restore` | `(s id) → ()` | |
 | `TrashItems`, `RestoreItems` | `(s ids) → ()` | `ids`: a JSON list. Every item must allow it, or nothing is done; the vault syncs afterwards |
 | `DeleteForever` | `(s ids) → ()` | Items in the trash only, deleted for good with their attachments; `Denied` otherwise |

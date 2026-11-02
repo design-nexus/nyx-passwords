@@ -385,6 +385,16 @@ impl Service {
         Ok(self.vault.activity(self.scope).await?)
     }
 
+    /// NetworkManager's saved Wi-Fi networks, as JSON (no passwords).
+    async fn wifi_networks(&self) -> Result<String, Error> {
+        Ok(self.vault.wifi_networks(self.scope).await?)
+    }
+
+    /// Saves the chosen networks (a JSON list of uuids) as Wi-Fi items; returns how many.
+    async fn import_wifi(&self, uuids: String) -> Result<u32, Error> {
+        Ok(self.vault.import_wifi(self.scope, &uuids).await?)
+    }
+
     /// Travel Mode's state, as JSON `{on, marked}`.
     async fn travel_mode(&self) -> Result<String, Error> {
         Ok(self.vault.travel_mode(self.scope).await?)

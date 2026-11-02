@@ -106,6 +106,7 @@
 - [x] Travel Mode (`core/travel.rs`): `nyx:travel`; purge plus `VACUUM`; filtered from sync, sign-in and saved edits; off needs `VerifyPassword` and a sync; live test `travel_mode_keeps_marked_items_off_this_device` (no trace of the id in the file)
 - [x] Grants for other Nyx apps (`daemon/grants.rs`, `Scope::Requester`): `RequestAccess`, `AccessStatus`, `AppSearch`, `AppCopy`; grants and the activity log encrypted with the user key; Settings → App access with revoke and activity; daemon test with a stand-in `nyx-mail`
 - [x] Fixed: SSH key items vanished after a full sync (missing `Bitwarden-Client-Version`)
+- [x] Import saved Wi-Fi networks (`daemon/wifi.rs`): NetworkManager over the system bus; `WifiNetworks` lists names only, `ImportWifi` reads each password in the daemon and saves `wifi` template items; skips open, enterprise, agent-owned and already-saved networks; daemon test `wifi_import` against a stand-in NetworkManager on a private bus
 - [ ] Biometrics and security-key unlock, on Nyx Biometrics (last)
 
 ## Phase 4 / 5

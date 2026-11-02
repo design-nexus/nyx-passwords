@@ -84,6 +84,10 @@ requests to sign in from Passwords.
   Firefox and KeePassXC (CSV), and exports in Bitwarden's formats (JSON, JSON with a
   password, JSON for this account, CSV), from Settings → Import and export. Exporting
   asks for the master password.
+- Imports the Wi-Fi networks this computer has saved (from NetworkManager) as Wi-Fi
+  network items, so other devices have them too: Settings → Import and export → Import
+  Wi-Fi networks. WPA2, WPA3 and WEP networks with a saved password; open and
+  enterprise networks are listed but skipped.
 - Works offline from the local copy; edits need the server. While the vault is open it
   hears from the server as soon as something changes on another device (live sync) and
   syncs then; a timed sync is the fallback.

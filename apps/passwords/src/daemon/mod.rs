@@ -17,6 +17,7 @@ pub mod settings;
 mod ssh_agent;
 mod vault;
 mod watch;
+mod wifi;
 
 use std::fs;
 use std::os::fd::AsRawFd;

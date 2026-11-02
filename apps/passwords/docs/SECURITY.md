@@ -97,6 +97,14 @@ against that. What Nyx Passwords does:
   two-step login" in the Security section and confirm. The whole public list is
   downloaded (about 300 KB, at most 8 MB read) and matched here; nothing about the
   vault is sent. It's kept in daemon memory until the vault locks.
+- **NetworkManager** (system bus): only when you press "Import…" for Wi-Fi networks
+  in Settings → Import and export. Listing reads the saved connections' settings,
+  which hold no passwords; the window gets names, SSIDs and security types. On
+  import the daemon asks NetworkManager for each chosen network's password
+  (`GetSecrets`, allowed by polkit for an admin user at the computer) and saves it
+  straight into a new item; it never reaches the window. Open and enterprise networks,
+  and networks whose password another program keeps, are skipped. At most 500
+  connections are read, with each value's length capped.
 
 The security report itself (weak, reused, old; `http://` addresses, duplicates,
 incomplete records) is worked out in daemon memory. Its strength cache keeps only item

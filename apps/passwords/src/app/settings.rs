@@ -733,6 +733,14 @@ pub fn open(ui: &Ui) {
         );
         g.append(&row);
         let u = ui.clone();
+        let (row, _) = w::button_row(
+            "Import Wi-Fi networks",
+            "The networks this computer has saved, with their passwords, as Wi-Fi network items.",
+            "Import…",
+            move |_| super::transfer::import_wifi(&u),
+        );
+        g.append(&row);
+        let u = ui.clone();
         let (row, _) =
             w::button_row("Export", "Your items in Bitwarden's formats, for a backup or another app.", "Export…", move |_| {
                 super::transfer::export(&u)
@@ -962,7 +970,7 @@ pub fn open(ui: &Ui) {
         nyx_ui::settings_card::Spec {
             groups: &[
                 ("Vault", "dialog-password-symbolic", "Locking, sync, server"),
-                ("Import and export", "document-send-symbolic", "Bitwarden, 1Password, browsers"),
+                ("Import and export", "document-send-symbolic", "Bitwarden, 1Password, browsers, Wi-Fi"),
                 ("Emergency access", "system-users-symbolic", "Trusted contacts"),
                 ("Clipboard", "edit-paste-symbolic", "Clearing, notifications"),
                 ("Generator", "media-playlist-shuffle-symbolic", "Passwords and passphrases"),

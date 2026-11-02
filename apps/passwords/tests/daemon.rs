@@ -24,16 +24,21 @@ struct Scratch {
 
 impl Scratch {
     fn start(extra_settings: &str) -> Scratch {
-        Self::start_in(extra_settings, false)
+        Self::start_in(extra_settings, false, None)
+    }
+
+    /// With NetworkManager answering on `system_bus` (a stand-in's private bus).
+    fn start_with_system_bus(extra_settings: &str, system_bus: &str) -> Scratch {
+        Self::start_in(extra_settings, false, Some(system_bus))
     }
 
     /// With a keyring of its own: a private session bus with gnome-keyring on it, its
     /// files in the scratch home. Never the user's keyring.
     fn start_with_keyring(extra_settings: &str) -> Scratch {
-        Self::start_in(extra_settings, true)
+        Self::start_in(extra_settings, true, None)
     }
 
-    fn start_in(extra_settings: &str, keyring: bool) -> Scratch {
+    fn start_in(extra_settings: &str, keyring: bool, system_bus: Option<&str>) -> Scratch {
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
@@ -50,7 +55,7 @@ impl Scratch {
         for d in ["run", "data", "empty"] {
             std::fs::create_dir_all(dir.path().join(d)).unwrap();
         }
-        let daemon = spawn_daemon(dir.path(), keyring);
+        let daemon = spawn_daemon(dir.path(), keyring, system_bus);
         let s = Scratch { dir, daemon };
         s.wait_for_socket();
         s
@@ -84,7 +89,7 @@ impl Scratch {
 }
 
 /// The daemon, from the scratch `dir`'s copy, with nothing of the user's session.
-fn spawn_daemon(dir: &Path, keyring: bool) -> Child {
+fn spawn_daemon(dir: &Path, keyring: bool, system_bus: Option<&str>) -> Child {
     let daemon_path = dir.join("bin/nyx-passwordsd");
     let mut command = if keyring {
         // `--login` makes and unlocks a "login" keyring from the password on stdin, so
@@ -112,7 +117,12 @@ fn spawn_daemon(dir: &Path, keyring: bool) -> Child {
             .env("HOME", dir)
             .env("XDG_RUNTIME_DIR", dir.join("run"))
             .env("XDG_CONFIG_HOME", dir.join("config"))
-            .env("XDG_DATA_HOME", dir.join("data")),
+            .env("XDG_DATA_HOME", dir.join("data"))
+            // Never the real system bus: no test reads this computer's Wi-Fi networks.
+            .env(
+                "DBUS_SYSTEM_BUS_ADDRESS",
+                system_bus.map_or_else(|| format!("unix:path={}", dir.join("no-system-bus").display()), str::to_string),
+            ),
         0,
     )
     .spawn()
@@ -202,7 +212,7 @@ async fn call_one(conn: &zbus::Connection, call: &[Value]) -> Value {
         "Status" | "Lock" | "Sync" | "List" | "Generate" | "SignOut" | "Pairings" | "KeyringUnlock" | "UnlockWithKeyring"
         | "Revision" | "SignInRequests" | "PollDeviceSignIn" | "GeneratorHistory" | "EmergencyContacts" | "Outdated"
         | "Restart" | "Recent" | "AliasServices" | "SecuritySummary" | "Approvals" | "SshAgentKeys" | "Hygiene"
-        | "GenerateSshKey" | "TravelMode" | "AccessStatus" | "Grants" | "Activity" => {
+        | "GenerateSshKey" | "TravelMode" | "AccessStatus" | "Grants" | "Activity" | "WifiNetworks" => {
             conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &()).await
         }
         "Search" | "AppSearch" => {
@@ -216,9 +226,8 @@ async fn call_one(conn: &zbus::Connection, call: &[Value]) -> Value {
         }
         "Unlock" | "CreateLogin" | "OpenUrl" | "Trash" | "Restore" | "VerifyPassword" | "ConfirmPairing" | "RemovePairing"
         | "Totp" | "GenerateUsername" | "CreateItem" | "CreateFolder" | "DeleteFolder" | "History" | "TrashItems"
-        | "RestoreItems" | "DeleteForever" | "OpenedItem" | "ListAliases" | "ItemAlias" | "CreateAlias" | "RevokeGrant" => {
-            conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(s(1),)).await
-        }
+        | "RestoreItems" | "DeleteForever" | "OpenedItem" | "ListAliases" | "ItemAlias" | "CreateAlias" | "RevokeGrant"
+        | "ImportWifi" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(s(1),)).await,
         "SignIn" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(s(1), s(2), s(3), 255u8, String::new())).await,
         "Attachments" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(s(1),)).await,
         "SetKeyringUnlock" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(call[1].as_bool().unwrap(),)).await,
@@ -1481,4 +1490,196 @@ async fn firefox_extension() {
     let entries = listing["entries"].as_array().unwrap();
     assert!(entries.iter().any(|e| e["username"] == "new@example.com"), "{listing}");
     assert!(entries.iter().any(|e| e["username"] == "octo" && e["name"] == "127.0.0.1"), "the passkey's new login: {listing}");
+}
+
+/// A stand-in NetworkManager on a private bus of its own: a `dbus-daemon` whose config
+/// has no service directories, so nothing (no keyring) can be started on it.
+struct FakeNetworkManager {
+    _dir: tempfile::TempDir,
+    bus: Child,
+    address: String,
+}
+
+impl Drop for FakeNetworkManager {
+    fn drop(&mut self) {
+        let _ = self.bus.kill();
+        let _ = self.bus.wait();
+    }
+}
+
+type NmSettings = std::collections::HashMap<String, std::collections::HashMap<String, zbus::zvariant::OwnedValue>>;
+
+/// One saved connection: (type, name, uuid, ssid, hidden, key-mgmt, psk-flags, psk).
+type Saved = (&'static str, &'static str, &'static str, &'static str, bool, Option<&'static str>, u32, Option<&'static str>);
+
+const SAVED: &[Saved] = &[
+    ("802-11-wireless", "Home", "u1", "HomeNet", false, Some("wpa-psk"), 0, Some("canary-wifi-Pw!9")),
+    ("802-11-wireless", "Cafe", "u2", "CafeFree", false, None, 0, None),
+    ("802-11-wireless", "Office", "u3", "Corp", false, Some("wpa-eap"), 0, None),
+    ("802-11-wireless", "Agent", "u4", "AgentNet", false, Some("wpa-psk"), 1, None),
+    ("802-3-ethernet", "Wired", "u5", "", false, None, 0, None),
+    ("802-11-wireless", "Lab", "u6", "LabNet", true, Some("sae"), 0, Some("canary-lab-Pw!9")),
+];
+
+struct NmSettingsObject;
+
+#[zbus::interface(name = "org.freedesktop.NetworkManager.Settings")]
+impl NmSettingsObject {
+    fn list_connections(&self) -> Vec<zbus::zvariant::OwnedObjectPath> {
+        (0..SAVED.len())
+            .map(|i| zbus::zvariant::OwnedObjectPath::try_from(format!("/org/freedesktop/NetworkManager/Settings/{i}")).unwrap())
+            .collect()
+    }
+}
+
+struct NmConnection(usize);
+
+fn owned(v: zbus::zvariant::Value<'static>) -> zbus::zvariant::OwnedValue {
+    zbus::zvariant::OwnedValue::try_from(v).unwrap()
+}
+
+#[zbus::interface(name = "org.freedesktop.NetworkManager.Settings.Connection")]
+impl NmConnection {
+    fn get_settings(&self) -> NmSettings {
+        use zbus::zvariant::Value;
+        let (kind, name, uuid, ssid, hidden, key_mgmt, flags, _) = SAVED[self.0];
+        let mut s = NmSettings::new();
+        s.insert(
+            "connection".into(),
+            [("type", owned(Value::from(kind))), ("id", owned(Value::from(name))), ("uuid", owned(Value::from(uuid)))]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
+        );
+        s.insert(
+            "802-11-wireless".into(),
+            [("ssid", owned(Value::from(ssid.as_bytes().to_vec()))), ("hidden", owned(Value::from(hidden)))]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
+        );
+        if let Some(m) = key_mgmt {
+            s.insert(
+                "802-11-wireless-security".into(),
+                [("key-mgmt", owned(Value::from(m))), ("psk-flags", owned(Value::from(flags)))]
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v))
+                    .collect(),
+            );
+        }
+        s
+    }
+
+    fn get_secrets(&self, setting: &str) -> zbus::fdo::Result<NmSettings> {
+        let Some(psk) = SAVED[self.0].7.filter(|_| setting == "802-11-wireless-security") else {
+            return Err(zbus::fdo::Error::Failed("no secrets".into()));
+        };
+        let mut s = NmSettings::new();
+        s.insert(setting.into(), [("psk".to_string(), owned(zbus::zvariant::Value::from(psk)))].into_iter().collect());
+        Ok(s)
+    }
+}
+
+fn fake_network_manager() -> FakeNetworkManager {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("system_bus_socket");
+    let config = dir.path().join("bus.conf");
+    std::fs::write(
+        &config,
+        format!(
+            r#"<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>custom</type>
+  <listen>unix:path={}</listen>
+  <auth>EXTERNAL</auth>
+  <policy context="default">
+    <allow user="*"/>
+    <allow own="*"/>
+    <allow send_destination="*"/>
+    <allow receive_sender="*"/>
+  </policy>
+</busconfig>"#,
+            socket.display()
+        ),
+    )
+    .unwrap();
+    let bus = Command::new("dbus-daemon")
+        .arg(format!("--config-file={}", config.display()))
+        .arg("--nofork")
+        .env_clear()
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !socket.exists() {
+        assert!(Instant::now() < deadline, "the stand-in bus didn't start");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let address = format!("unix:path={}", socket.display());
+    let serve = address.clone();
+    let (ready, started) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async move {
+            let mut builder = zbus::connection::Builder::address(serve.as_str())
+                .unwrap()
+                .name("org.freedesktop.NetworkManager")
+                .unwrap()
+                .serve_at("/org/freedesktop/NetworkManager/Settings", NmSettingsObject)
+                .unwrap();
+            for i in 0..SAVED.len() {
+                builder = builder.serve_at(format!("/org/freedesktop/NetworkManager/Settings/{i}"), NmConnection(i)).unwrap();
+            }
+            let _conn = builder.build().await.unwrap();
+            ready.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+    });
+    started.recv_timeout(Duration::from_secs(10)).unwrap();
+    FakeNetworkManager { _dir: dir, bus, address }
+}
+
+/// Importing saved Wi-Fi networks: the window gets names only; the daemon reads each
+/// password from NetworkManager and saves Wi-Fi network items.
+#[tokio::test]
+#[ignore = "needs NYX_PW_TEST_SERVER"]
+async fn wifi_import() {
+    let (server, ca) = test_server().expect("NYX_PW_TEST_SERVER and NYX_PW_TEST_CA");
+    let email = format!("wifi-{}@example.com", &uuid::Uuid::new_v4().simple().to_string()[..10]);
+    let password = "correct horse wifi battery";
+    register(&server, &ca, &email, password).await;
+    let nm = fake_network_manager();
+    let s = Scratch::start_with_system_bus(&format!("extra_ca = {:?}\n", ca.display().to_string()), &nm.address);
+
+    let app = s.as_peer("nyx-passwords", json!([["SignIn", server, email, password], ["WifiNetworks"]]));
+    assert_eq!(ok(&app[0])[0], true);
+    let listed = ok(&app[1]).as_str().unwrap().to_string();
+    assert!(!listed.contains("canary"), "no passwords in the list");
+    let list: Value = serde_json::from_str(&listed).unwrap();
+    let by_name = |name: &str| list.as_array().unwrap().iter().find(|n| n["name"] == name).cloned().unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 5, "Wi-Fi only: {list}");
+    assert!(by_name("Home")["why_not"].is_null());
+    assert_eq!(by_name("Lab")["security"], "WPA3");
+    assert!(by_name("Cafe")["why_not"].as_str().unwrap().contains("no password"));
+    assert!(by_name("Office")["why_not"].as_str().unwrap().contains("enterprise"));
+    assert!(by_name("Agent")["why_not"].as_str().unwrap().contains("another program"));
+    let g = s.as_peer("nyx-glimpse", json!([["WifiNetworks"], ["ImportWifi", "[\"u1\"]"]]));
+    assert_eq!((err(&g[0]), err(&g[1])), ("Denied", "Denied"));
+
+    // Only importable ones are saved, whatever is asked for; the second time, none.
+    let app = s.as_peer("nyx-passwords", json!([["ImportWifi", "[\"u1\",\"u2\",\"u3\",\"u4\",\"u5\",\"u6\"]"], ["List"]]));
+    assert_eq!(ok(&app[0]), 2);
+    let listing: Value = serde_json::from_str(ok(&app[1]).as_str().unwrap()).unwrap();
+    let home = listing["entries"].as_array().unwrap().iter().find(|e| e["name"] == "Home").cloned().unwrap();
+    assert_eq!((home["username"].as_str(), home["template"].as_str()), (Some("HomeNet"), Some("wifi")));
+    let id = home["id"].as_str().unwrap().to_string();
+    let app = s.as_peer(
+        "nyx-passwords",
+        json!([["Reveal", id, "password"], ["ImportWifi", "[\"u1\",\"u6\"]"], ["WifiNetworks"], ["Activity"]]),
+    );
+    assert_eq!(ok(&app[0]), "canary-wifi-Pw!9");
+    assert_eq!(ok(&app[1]), 0, "already saved");
+    assert!(ok(&app[2]).as_str().unwrap().contains(r#""already_saved":true"#));
+    let log = ok(&app[3]).as_str().unwrap();
+    assert!(log.contains("imported Wi-Fi network") && !log.contains("canary"));
 }
