@@ -17,7 +17,7 @@ const RECOVERY_CODE: u8 = 8;
 
 pub fn show(ui: &Ui, st: &str) {
     match st {
-        state::LOCKED => unlock_page(ui),
+        state::LOCKED => locked(ui),
         state::LOGGED_OUT => sign_in_page(ui, None),
         _ => {}
     }
@@ -423,15 +423,99 @@ fn two_step(ui: &Ui, pending: Pending) {
     code.grab_focus();
 }
 
-fn unlock_page(ui: &Ui) {
+fn who() -> String {
     let p = prefs::get();
-    let who = if p.last_email.is_empty() { String::new() } else { format!("{} on {}", p.last_email, host(&p.last_server)) };
-    let card = page(ui, "Vault locked", &who);
+    if p.last_email.is_empty() { String::new() } else { format!("{} on {}", p.last_email, host(&p.last_server)) }
+}
+
+/// The vault is locked: with face unlock set up the face goes first and nothing asks for
+/// the password unless the face doesn't open it; otherwise the master password.
+fn locked(ui: &Ui) {
+    let ui = ui.clone();
+    glib::spawn_future_local(async move {
+        let face = client::call("FaceUnlock", None).await.ok().and_then(|v| v.get::<(bool,)>()).is_some_and(|(on,)| on);
+        if *ui.state.borrow() != state::LOCKED {
+            return;
+        }
+        if face { face_first(&ui) } else { unlock_page(&ui, None) }
+    });
+}
+
+thread_local! {
+    /// A face unlock is waiting on the system prompt.
+    static FACE_RUNNING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Face first, as Windows Hello does: a quiet page while the system prompt asks the person
+/// to confirm it's them, started once the window is in front of them (a vault that locks
+/// on a timer behind another window raises nothing). The password page comes only when the
+/// face doesn't open the vault, or when asked for.
+fn face_first(ui: &Ui) {
+    let card = page(ui, "Vault locked", &who());
+    card.append(&label("Confirm it's you to open the vault.", "dim"));
+    let password = gtk::Button::with_label("Use master password");
+    password.add_css_class("flat");
+    let u = ui.clone();
+    password.connect_clicked(move |_| unlock_page(&u, None));
+    card.append(&buttons(&[&password]));
+    let start = {
+        let (ui, card) = (ui.clone(), card.clone());
+        move || {
+            if card.root().is_none() || FACE_RUNNING.with(|r| r.replace(true)) {
+                return;
+            }
+            let ui = ui.clone();
+            glib::spawn_future_local(async move {
+                let reply = client::call("UnlockWithFace", None).await;
+                FACE_RUNNING.with(|r| r.set(false));
+                match reply {
+                    Ok(_) => {
+                        ui::set_state(&ui, state::UNLOCKED);
+                        ui::sync(&ui);
+                    }
+                    Err(e) if e.is(Code::LoggedOut) => ui::set_state(&ui, state::LOGGED_OUT),
+                    Err(_) if *ui.state.borrow() != state::LOCKED => {}
+                    Err(e) => {
+                        let text = e.to_string();
+                        let note = if text.contains("not confirmed") {
+                            "Not confirmed. Use your master password, or try your face again."
+                        } else {
+                            &text
+                        };
+                        unlock_page(&ui, Some(note));
+                    }
+                }
+            });
+        }
+    };
+    if ui.window.is_active() {
+        start();
+        return;
+    }
+    let handler: std::rc::Rc<std::cell::Cell<Option<glib::SignalHandlerId>>> = Default::default();
+    let h2 = handler.clone();
+    let id = ui.window.connect_is_active_notify(move |w| {
+        if !w.is_active() {
+            return;
+        }
+        if let Some(id) = h2.take() {
+            w.disconnect(id);
+        }
+        start();
+    });
+    handler.set(Some(id));
+}
+
+fn unlock_page(ui: &Ui, note: Option<&str>) {
+    let card = page(ui, "Vault locked", &who());
     let password = gtk::PasswordEntry::new();
     password.set_show_peek_icon(true);
     field(&card, "Master password", &password);
     let err = error_label();
     card.append(&err);
+    if let Some(note) = note {
+        show_error(&err, note);
+    }
     let u = ui.clone();
     let sign_out = w::two_click("Sign out", "Click again to sign out", move || {
         let u = u.clone();
@@ -451,7 +535,7 @@ fn unlock_page(ui: &Ui) {
         "Unlock with the key saved in your desktop keyring",
         ("KeyringUnlock", "UnlockWithKeyring"),
     );
-    let face = face_unlock(ui, &card, &err, &password);
+    let face = face_unlock(ui, &card);
     card.append(&buttons(&[&sign_out, &keyring, &face, &go]));
     let submit = {
         let (ui, password, err, go) = (ui.clone(), password.clone(), err.clone(), go.clone());
@@ -607,78 +691,25 @@ fn host(url: &str) -> String {
     url.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/').to_string()
 }
 
-/// Unlocking with the face, as Windows Hello does: when Nyx Biometrics seals the key
-/// (Settings, "Unlock with your face"), a labelled button that also starts once on its own
-/// as soon as the window is in front of the person. The system prompt asks them to confirm
-/// it's them; cancelling leaves the master password. Where Nyx Biometrics is installed but
-/// this is off, a line says where to turn it on.
-fn face_unlock(ui: &Ui, card: &gtk::Box, err: &gtk::Label, password: &gtk::PasswordEntry) -> gtk::Button {
+/// "Unlock with your face" on the password page, when Nyx Biometrics seals the key
+/// (Settings, "Unlock with your face"): it goes back to the face-first page. Where Nyx
+/// Biometrics is installed but this is off, a line says where to turn it on.
+fn face_unlock(ui: &Ui, card: &gtk::Box) -> gtk::Button {
     let button = gtk::Button::with_label("Unlock with your face");
     button.set_visible(false);
     let hint = label("Turn on “Unlock with your face” in Settings to open the vault without the master password.", "dim");
     hint.set_visible(false);
     card.append(&hint);
-    let (u, e, pw) = (ui.clone(), err.clone(), password.clone());
-    button.connect_clicked(move |b| {
-        b.set_sensitive(false);
-        show_error(&e, "");
-        let (ui, err, b, pw) = (u.clone(), e.clone(), b.clone(), pw.clone());
-        glib::spawn_future_local(async move {
-            let reply = client::call("UnlockWithFace", None).await;
-            b.set_sensitive(true);
-            match reply {
-                Ok(_) => {
-                    ui::set_state(&ui, state::UNLOCKED);
-                    ui::sync(&ui);
-                }
-                Err(e) if e.is(Code::LoggedOut) => ui::set_state(&ui, state::LOGGED_OUT),
-                Err(e) => {
-                    let text = e.to_string();
-                    let text = if text.contains("not confirmed") {
-                        "Not confirmed. Try again, or use your master password.".to_string()
-                    } else {
-                        text
-                    };
-                    show_error(&err, &text);
-                    pw.grab_focus();
-                }
-            }
-        });
-    });
-    let (b, h, window) = (button.clone(), hint.clone(), ui.window.clone());
+    let u = ui.clone();
+    button.connect_clicked(move |_| face_first(&u));
+    let (b, h) = (button.clone(), hint.clone());
     glib::spawn_future_local(async move {
         let on = client::call("FaceUnlock", None).await.ok().and_then(|v| v.get::<(bool,)>()).is_some_and(|(on,)| on);
-        if !on {
+        if on {
+            b.set_visible(true);
+        } else {
             h.set_visible(std::path::Path::new(nyx_auth_proto::keyd::SOCKET).exists());
-            return;
         }
-        b.set_visible(true);
-        // Once per page, and only while the person is looking at it: a vault that locks
-        // on a timer behind another window doesn't raise a prompt by itself.
-        let start = {
-            let b = b.clone();
-            move || {
-                if b.root().is_some() && b.is_visible() && b.is_sensitive() {
-                    b.emit_clicked();
-                }
-            }
-        };
-        if window.is_active() {
-            start();
-            return;
-        }
-        let handler: std::rc::Rc<std::cell::Cell<Option<glib::SignalHandlerId>>> = Default::default();
-        let h2 = handler.clone();
-        let id = window.connect_is_active_notify(move |w| {
-            if !w.is_active() {
-                return;
-            }
-            if let Some(id) = h2.take() {
-                w.disconnect(id);
-            }
-            start();
-        });
-        handler.set(Some(id));
     });
     button
 }
