@@ -221,11 +221,10 @@ async fn call_one(conn: &zbus::Connection, call: &[Value]) -> Value {
     let s = |i: usize| call[i].as_str().unwrap().to_string();
     let reply = match method {
         "Status" | "Lock" | "Sync" | "List" | "Generate" | "SignOut" | "Pairings" | "KeyringUnlock" | "UnlockWithKeyring"
-        | "Revision" | "SignInRequests" | "PollDeviceSignIn" | "GeneratorHistory" | "EmergencyContacts" | "Outdated"
-        | "Restart" | "Recent" | "AliasServices" | "SecuritySummary" | "Approvals" | "SshAgentKeys" | "Hygiene"
-        | "GenerateSshKey" | "TravelMode" | "AccessStatus" | "Grants" | "Activity" | "WifiNetworks" => {
-            conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &()).await
-        }
+        | "FaceUnlock" | "UnlockWithFace" | "Revision" | "SignInRequests" | "PollDeviceSignIn" | "GeneratorHistory"
+        | "EmergencyContacts" | "Outdated" | "Restart" | "Recent" | "AliasServices" | "SecuritySummary" | "Approvals"
+        | "SshAgentKeys" | "Hygiene" | "GenerateSshKey" | "TravelMode" | "AccessStatus" | "Grants" | "Activity"
+        | "WifiNetworks" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &()).await,
         "Search" | "AppSearch" => {
             conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(s(1), call[2].as_u64().unwrap() as u32)).await
         }
@@ -241,6 +240,7 @@ async fn call_one(conn: &zbus::Connection, call: &[Value]) -> Value {
         | "ImportWifi" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(s(1),)).await,
         "SignIn" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(s(1), s(2), s(3), 255u8, String::new())).await,
         "Attachments" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(s(1),)).await,
+        "SetFaceUnlock" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(call[1].as_bool().unwrap(),)).await,
         "SetKeyringUnlock" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(call[1].as_bool().unwrap(),)).await,
         "SetTravelMode" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(call[1].as_bool().unwrap(),)).await,
         "SetSshAgentKey" => {
@@ -353,12 +353,21 @@ fn strangers_and_scopes() {
     }
     let meta = std::fs::metadata(s.socket()).unwrap();
     assert_eq!(std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o777, 0o600);
+
+    // Glimpse may ask whether face unlock is set up and use it (the key service still asks
+    // the person); other apps may not, and Glimpse can't turn it on.
+    let g = s.as_peer("nyx-glimpse", json!([["FaceUnlock"], ["UnlockWithFace"], ["SetFaceUnlock", true]]));
+    assert_eq!(ok(&g[0]), &json!(false));
+    assert_eq!(err(&g[1]), "LoggedOut");
+    assert_eq!(err(&g[2]), "Denied");
+    let mail = s.as_peer("nyx-mail", json!([["FaceUnlock"], ["UnlockWithFace"]]));
+    assert_eq!((err(&mail[0]), err(&mail[1])), ("Denied", "Denied"));
 }
 
 #[test]
 fn glimpse_switched_off() {
     let s = Scratch::start("glimpse = false\n");
-    let g = s.as_peer("nyx-glimpse", json!([["Search", "x", 5], ["Generate"], ["Lock"]]));
+    let g = s.as_peer("nyx-glimpse", json!([["Search", "x", 5], ["Generate"], ["Lock"], ["FaceUnlock"], ["UnlockWithFace"]]));
     for r in &g {
         assert_eq!(err(r), "Denied", "{r}");
     }

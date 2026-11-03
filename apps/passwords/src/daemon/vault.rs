@@ -690,9 +690,9 @@ impl Vault {
     /// Unlocks with the user key sealed by Nyx Biometrics, after the person confirms it's
     /// them (face, fingerprint, security key or password, as the computer is set up).
     pub async fn unlock_with_face(self: &Arc<Self>, scope: Scope) -> Result<()> {
-        need(scope, Scope::App)?;
         let entry = {
-            let st = self.state.lock().await;
+            let mut st = self.state.lock().await;
+            allow_face_unlock(scope, &mut st)?;
             if st.session.is_some() {
                 return Ok(());
             }
@@ -729,8 +729,12 @@ impl Vault {
 
     /// Whether unlocking with the face is set up for this account.
     pub async fn face_unlock(&self, scope: Scope) -> Result<bool> {
-        need(scope, Scope::App)?;
-        let Some(entry) = face_entry(&*self.state.lock().await) else { return Ok(false) };
+        let entry = {
+            let mut st = self.state.lock().await;
+            allow_face_unlock(scope, &mut st)?;
+            face_entry(&st)
+        };
+        let Some(entry) = entry else { return Ok(false) };
         Ok(tokio::task::spawn_blocking(move || entry.exists()).await.ok().and_then(|r| r.ok()).unwrap_or(false))
     }
 
@@ -1766,6 +1770,15 @@ fn allow_finder(scope: Scope, st: &mut State) -> Result<()> {
         Scope::Assistant if st.settings.refresh().assistant => Ok(()),
         Scope::Assistant => Err(Failure::new(Code::Denied, "turn on Nyx Assistant in Passwords' settings first")),
         _ => allow_glimpse(scope, st),
+    }
+}
+
+/// Unlocking with the face: the window, and Glimpse while it's turned on. Either way the
+/// key service asks the person to confirm it's them before the vault opens.
+fn allow_face_unlock(scope: Scope, st: &mut State) -> Result<()> {
+    match scope {
+        Scope::App | Scope::Glimpse => allow_glimpse(scope, st),
+        _ => Err(denied()),
     }
 }
 

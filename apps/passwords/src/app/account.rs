@@ -451,9 +451,7 @@ fn unlock_page(ui: &Ui) {
         "Unlock with the key saved in your desktop keyring",
         ("KeyringUnlock", "UnlockWithKeyring"),
     );
-    // Shown when Nyx Biometrics seals the key (Settings, "Unlock with your face"). It asks
-    // the person to confirm it's them in the system prompt.
-    let face = quick_unlock(ui, &err, "camera-web-symbolic", "Unlock with your face", ("FaceUnlock", "UnlockWithFace"));
+    let face = face_unlock(ui, &card, &err, &password);
     card.append(&buttons(&[&sign_out, &keyring, &face, &go]));
     let submit = {
         let (ui, password, err, go) = (ui.clone(), password.clone(), err.clone(), go.clone());
@@ -607,6 +605,82 @@ pub fn confirm_for(ui: &Ui, why: &str, then: impl Fn() + 'static) {
 
 fn host(url: &str) -> String {
     url.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/').to_string()
+}
+
+/// Unlocking with the face, as Windows Hello does: when Nyx Biometrics seals the key
+/// (Settings, "Unlock with your face"), a labelled button that also starts once on its own
+/// as soon as the window is in front of the person. The system prompt asks them to confirm
+/// it's them; cancelling leaves the master password. Where Nyx Biometrics is installed but
+/// this is off, a line says where to turn it on.
+fn face_unlock(ui: &Ui, card: &gtk::Box, err: &gtk::Label, password: &gtk::PasswordEntry) -> gtk::Button {
+    let button = gtk::Button::with_label("Unlock with your face");
+    button.set_visible(false);
+    let hint = label("Turn on “Unlock with your face” in Settings to open the vault without the master password.", "dim");
+    hint.set_visible(false);
+    card.append(&hint);
+    let (u, e, pw) = (ui.clone(), err.clone(), password.clone());
+    button.connect_clicked(move |b| {
+        b.set_sensitive(false);
+        show_error(&e, "");
+        let (ui, err, b, pw) = (u.clone(), e.clone(), b.clone(), pw.clone());
+        glib::spawn_future_local(async move {
+            let reply = client::call("UnlockWithFace", None).await;
+            b.set_sensitive(true);
+            match reply {
+                Ok(_) => {
+                    ui::set_state(&ui, state::UNLOCKED);
+                    ui::sync(&ui);
+                }
+                Err(e) if e.is(Code::LoggedOut) => ui::set_state(&ui, state::LOGGED_OUT),
+                Err(e) => {
+                    let text = e.to_string();
+                    let text = if text.contains("not confirmed") {
+                        "Not confirmed. Try again, or use your master password.".to_string()
+                    } else {
+                        text
+                    };
+                    show_error(&err, &text);
+                    pw.grab_focus();
+                }
+            }
+        });
+    });
+    let (b, h, window) = (button.clone(), hint.clone(), ui.window.clone());
+    glib::spawn_future_local(async move {
+        let on = client::call("FaceUnlock", None).await.ok().and_then(|v| v.get::<(bool,)>()).is_some_and(|(on,)| on);
+        if !on {
+            h.set_visible(std::path::Path::new(nyx_auth_proto::keyd::SOCKET).exists());
+            return;
+        }
+        b.set_visible(true);
+        // Once per page, and only while the person is looking at it: a vault that locks
+        // on a timer behind another window doesn't raise a prompt by itself.
+        let start = {
+            let b = b.clone();
+            move || {
+                if b.root().is_some() && b.is_visible() && b.is_sensitive() {
+                    b.emit_clicked();
+                }
+            }
+        };
+        if window.is_active() {
+            start();
+            return;
+        }
+        let handler: std::rc::Rc<std::cell::Cell<Option<glib::SignalHandlerId>>> = Default::default();
+        let h2 = handler.clone();
+        let id = window.connect_is_active_notify(move |w| {
+            if !w.is_active() {
+                return;
+            }
+            if let Some(id) = h2.take() {
+                w.disconnect(id);
+            }
+            start();
+        });
+        handler.set(Some(id));
+    });
+    button
 }
 
 /// A button that unlocks without the master password, shown only while the daemon says
