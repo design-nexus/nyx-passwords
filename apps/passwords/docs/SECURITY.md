@@ -15,6 +15,7 @@ can't meet a rule, the change waits; the rule doesn't bend.
 | Access token | Daemon memory |
 | Refresh token | Secret Service |
 | User key | Secret Service, only while "Unlock with the keyring" is on (off by default). Then anyone who can use the logged-in session, including programs running as the user, can open the vault; the setting says so |
+| User key, sealed | Nyx Biometrics' key service (`nyx-auth-keyd`, root), sealed to this computer's TPM, only while unlocking with the face is on (off by default). Released to the daemon only after the person confirms it's them; never stored in the session (below) |
 | A grantor's vault (emergency access) | Daemon memory while it's open for viewing, dropped on lock; their user key arrives encrypted for this account's public key |
 | Encrypted snapshot | `vault.sqlite` (0600), the same ciphertext the server keeps |
 
@@ -26,7 +27,7 @@ paired browser asking about its own origin.
 
 | Adversary | In scope | Measures |
 | --- | --- | --- |
-| Someone who gets the disk (theft, backup, a shared machine) | Yes | Only ciphertext and a refresh token in a keyring are stored. A refresh token alone can't decrypt anything. Unlocking needs the master password. |
+| Someone who gets the disk (theft, backup, a shared machine) | Yes | Only ciphertext and a refresh token in a keyring are stored. A refresh token alone can't decrypt anything. Unlocking needs the master password, or the face on this computer: the sealed key opens only with its own TPM. |
 | Network attacker | Yes | rustls with system roots. `http://` only on loopback. No certificate-pinning bypass and no "ignore errors" switch. |
 | Malicious or compromised web page | Yes | The origin comes from browser tab APIs, not from the page. Base-domain matching uses the PSL. A fill is a user's click or shortcut, or the narrow page-load fill below. No fill into cross-origin frames unless their site matches. One item per request. The page can't read or press the extension's menu, bar or passkey window. |
 | A malicious extension or a process pretending to be the extension | Yes | Pairing is confirmed by the user in the desktop app. Every message is authenticated with the pairing key, carries a counter (no replays) and is scoped to its origin. |
@@ -68,6 +69,42 @@ against that. What Nyx Passwords does:
   extraction visible.
 - An attacker with the user's access can read the clipboard after a copy. That is the
   clipboard's nature (below).
+
+### Nyx Biometrics: the face, and confirming it's you
+
+Where Nyx Biometrics is installed, the person can unlock with the face and confirm
+some actions without the master password. Passwords never sees a face, a fingerprint
+or a key's answer; it asks Nyx Biometrics, which shows the system's prompt (polkit,
+answered by whatever the computer is set up with) and says yes or no.
+
+- **Unlocking with the face** (`face_unlock.rs`): turning it on needs the master
+  password confirmed just before, and the prompt. The daemon then hands the user key
+  to the key service, which seals it to the TPM. Each unlock asks the key service,
+  which shows the prompt before it hands the key back; the daemon opens the vault with
+  it and keeps nothing. Only the window, and Glimpse while its integration is on, may
+  start it. A key that no longer fits (rotated keys) is cleared; signing out clears
+  it too.
+- **It isn't the master password.** A face unlock opens the vault but doesn't count as
+  confirming the master password: exporting, turning Travel Mode off, turning on
+  keyring or face unlock, and items that ask for the master password again still ask
+  for it in the window.
+- **Confirming with the sign-in broker** (`sign_in.rs`, `nyx-authd`): Glimpse copying
+  from an item that asks for the master password again (opt-in), and a passkey for a
+  site that requires user verification, ask the broker under the `vault` policy. The
+  broker is used only if the session-bus name belongs to the installed `nyx-authd`;
+  otherwise the daemon asks polkit directly, a system service.
+- **Limits:**
+  - The prompt shows polkit's fixed message ("Confirm it's you to allow this"), not
+    what's asked; the window says what it's for.
+  - With hands-free face at administrator prompts, a program running as the user that
+    can start the daemon gets the vault opened if the user is in view when it asks.
+    The prompt is on screen each time.
+  - The key service hands the key to a program by its name, `nyx-passwordsd`, and
+    doesn't yet check where it's installed (the broker does). Until it does, any
+    program running as the user could ask for the sealed key under that name and get
+    it when the prompt passes. Fixed in Nyx Biometrics
+    ([nyx-biometrics#11](https://github.com/design-nexus/nyx-biometrics/pull/11)); this
+    holds until that key service is installed.
 
 ### Where the daemon connects
 
