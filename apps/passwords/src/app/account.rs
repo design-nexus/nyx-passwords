@@ -427,9 +427,12 @@ fn unlock_page(ui: &Ui) {
     let p = prefs::get();
     let who = if p.last_email.is_empty() { String::new() } else { format!("{} on {}", p.last_email, host(&p.last_server)) };
     let card = page(ui, "Vault locked", &who);
+    // The password and the buttons step aside while the face is checked.
+    let manual = w::vbox(card.spacing());
+    card.append(&manual);
     let password = gtk::PasswordEntry::new();
     password.set_show_peek_icon(true);
-    field(&card, "Master password", &password);
+    field(&manual, "Master password", &password);
     let err = error_label();
     card.append(&err);
     let u = ui.clone();
@@ -451,8 +454,8 @@ fn unlock_page(ui: &Ui) {
         "Unlock with the key saved in your desktop keyring",
         ("KeyringUnlock", "UnlockWithKeyring"),
     );
-    let face = face_unlock(ui, &card, &err, &password);
-    card.append(&buttons(&[&sign_out, &keyring, &face, &go]));
+    let face = face_unlock(ui, &card, &manual, &err, &password);
+    manual.append(&buttons(&[&sign_out, &keyring, &face, &go]));
     let submit = {
         let (ui, password, err, go) = (ui.clone(), password.clone(), err.clone(), go.clone());
         move || {
@@ -612,20 +615,27 @@ fn host(url: &str) -> String {
 /// as soon as the window is in front of the person. The system prompt asks them to confirm
 /// it's them; cancelling leaves the master password. Where Nyx Biometrics is installed but
 /// this is off, a line says where to turn it on.
-fn face_unlock(ui: &Ui, card: &gtk::Box, err: &gtk::Label, password: &gtk::PasswordEntry) -> gtk::Button {
+fn face_unlock(ui: &Ui, card: &gtk::Box, manual: &gtk::Box, err: &gtk::Label, password: &gtk::PasswordEntry) -> gtk::Button {
     let button = gtk::Button::with_label("Unlock with your face");
     button.set_visible(false);
     let hint = label("Turn on “Unlock with your face” in Settings to open the vault without the master password.", "dim");
     hint.set_visible(false);
     card.append(&hint);
-    let (u, e, pw) = (ui.clone(), err.clone(), password.clone());
+    let waiting = label("Confirm it's you to open the vault…", "dim");
+    waiting.set_visible(false);
+    card.append(&waiting);
+    let (u, e, pw, m, wt) = (ui.clone(), err.clone(), password.clone(), manual.clone(), waiting.clone());
     button.connect_clicked(move |b| {
         b.set_sensitive(false);
         show_error(&e, "");
-        let (ui, err, b, pw) = (u.clone(), e.clone(), b.clone(), pw.clone());
+        m.set_visible(false);
+        wt.set_visible(true);
+        let (ui, err, b, pw, m, wt) = (u.clone(), e.clone(), b.clone(), pw.clone(), m.clone(), wt.clone());
         glib::spawn_future_local(async move {
             let reply = client::call("UnlockWithFace", None).await;
             b.set_sensitive(true);
+            wt.set_visible(false);
+            m.set_visible(true);
             match reply {
                 Ok(_) => {
                     ui::set_state(&ui, state::UNLOCKED);
