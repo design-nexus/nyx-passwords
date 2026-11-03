@@ -113,7 +113,7 @@
 - [ ] Bitwarden Android on a device, with the app association check
 - [ ] The web vault: the same items by hand
 - [ ] The extension in Firefox (signed release), Zen, Chromium and Brave; the end-to-end test with `NYX_PW_TEST_FIREFOX`
-- [x] Extension 0.5.0: SSH keys show their public key and fingerprint (copyable), "Open in Passwords" goes to the item, Unlock brings up Passwords' unlock window while locked (one unsealed frame naming a stored pairing, every 5 s at most), an outline toolbar icon for Firefox's light and dark themes
+- [x] Extension 0.5.0: SSH keys show their public key and fingerprint (copyable), "Open in Passwords" goes to the item, Unlock brings up Passwords' unlock window while locked (one unsealed frame naming a stored pairing, every 5 s at most), a Design 2.0 toolbar icon for Firefox, an azure shield with a padlock on the app tile (0.5.1)
 
 ### Last
 - [ ] Biometrics and security-key unlock, on Nyx Biometrics (last)
