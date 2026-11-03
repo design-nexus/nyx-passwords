@@ -1303,6 +1303,27 @@ async fn paired_browser() {
     assert_eq!(r[20]["error"], "Clipboard", "no compositor here; the value isn't sent back");
     assert!(r[21]["username"].as_str().is_some_and(|u| u.len() > 3), "{}", r[21]);
 
+    // The save prompt doesn't offer a login that's already saved.
+    let r = s.as_browser(
+        &json!([
+            {"r": "check", "url": page, "username": " OCTO ", "password": "canary-gh-Pw!9"},
+            {"r": "check", "url": page, "username": "", "password": "canary-gh-Pw!9"},
+            {"r": "check", "url": "https://example.org/", "username": "octo", "password": "canary-gh-Pw!9", "filled": gh},
+            {"r": "check", "url": "https://example.org/", "username": "octo", "password": "canary-gh-Pw!9"},
+            {"r": "check", "url": page, "username": "", "password": "canary-new-Pw!9", "current": "canary-gh-Pw!9", "change": true},
+            {"r": "check", "url": "https://login.github.com/frame", "page": page, "username": "octo", "password": "canary-gh-Pw!9"},
+            {"r": "check", "url": page, "username": "", "password": "canary-other-Pw!9"},
+        ])
+        .to_string(),
+    );
+    assert_eq!(r[0]["state"], "same", "usernames compare trimmed and without case");
+    assert_eq!(r[1]["state"], "same", "a sign-in's password step has no username");
+    assert_eq!(r[2]["state"], "same", "the login just filled, from another site");
+    assert_eq!(r[3]["state"], "new");
+    assert_eq!((r[4]["state"].as_str(), r[4]["id"].as_str()), (Some("changed"), Some(gh.as_str())), "a change-password form");
+    assert_eq!(r[5]["state"], "same", "a sign-in frame on the page's site");
+    assert_eq!(r[6]["state"], "new");
+
     // Passkeys: made for the page's site, listed, used; refused for other sites.
     use base64::Engine;
     let hash = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([7u8; 32]);
@@ -1625,12 +1646,19 @@ async fn firefox_extension() {
     assert!(r["failed"].is_null(), "{}\n{r}", r["failed"].as_str().unwrap_or_default());
     assert_eq!(r["search"], json!(["Local test"]));
     assert_eq!(r["fillOnLoad"], json!({"user": "octo", "pass": "canary-local-Pw!9"}));
+    assert_eq!(r["menuAfterPick"], false, "picking from the menu doesn't open it again");
+    assert_eq!(r["barAfterFill"], false, "the login just filled isn't offered for saving");
+    assert_eq!(r["barAfterTwoSteps"], false, "nor on a sign-in's password step");
+    assert_eq!(r["changeQuestion"], format!("Update the password for 127.0.0.1:{port}?"));
     assert_eq!(r["menuRows"], json!(["Visa"]));
     assert_eq!(r["cardFill"], json!({"name": "O. Cat", "number": "4111111111111111", "cvc": "123"}));
     assert_eq!(r["barQuestion"], format!("Save this login for 127.0.0.1:{port}?"));
     assert_eq!(r["rememberQuestion"], "Signed in with Google");
     assert!(r["socialMenu"].as_array().unwrap().iter().any(|t| t == "Sign in with Google"), "{r}");
     assert_eq!((r["makeKey"].as_str(), r["useKey"].as_str()), (Some("ok"), Some("ok")), "{r}");
+    assert_eq!(r["passkeyCardInPage"], true, "the passkey card is over the page");
+    assert_eq!(r["useCountdown"], true, "one passkey: the card counts down");
+    assert_eq!(r["passkeyWindow"], false, "no window was opened");
     let made = &r["webauthn"]["made"];
     assert_eq!(
         (made["type"].as_str(), made["raw"].as_u64(), made["isCredential"].as_bool()),

@@ -146,6 +146,26 @@ fn same_site(frame: Option<&str>, page: &Url) -> bool {
     })
 }
 
+/// Whether a typed username is a saved one: sites lowercase emails and trim what's typed.
+pub(super) fn same_username(saved: &str, typed: &str) -> bool {
+    saved.trim().to_lowercase() == typed.trim().to_lowercase()
+}
+
+/// The logins a submitted form may already be saved as: those for the frame's address
+/// (`url`), and for the tab's (`page`) when the frame is on the same site.
+pub(super) fn save_candidates<'a>(session: &'a Session, frame: &Url, request: &Value) -> Vec<&'a Entry> {
+    let mut found = session.view.matching(frame);
+    let tab = request["page"].as_str().and_then(|u| Url::parse(u).ok()).filter(|u| matches!(u.scheme(), "http" | "https"));
+    if let Some(tab) = tab.filter(|t| same_site(Some(frame.as_str()), t)) {
+        for e in session.view.matching(&tab) {
+            if !found.iter().any(|f| f.id == e.id) {
+                found.push(e);
+            }
+        }
+    }
+    found
+}
+
 /// Whether a login may be filled as `page` loads: it's https, the login isn't marked
 /// against it, and one of its addresses names this very host (a base-domain match alone
 /// isn't enough) or matches under an explicit rule.
@@ -257,20 +277,51 @@ pub(super) fn read(st: &mut State, pairing: &str, request: &Value) -> Value {
             let Some(session) = st.session.as_ref() else { return error(Code::Locked) };
             let username = request["username"].as_str().unwrap_or_default().trim();
             let password = request["password"].as_str().unwrap_or_default();
-            let found =
-                session.view.matching(&page).into_iter().find(|e| e.username.as_ref().map_or("", |u| u.expose()) == username);
+            let has = |id: Uuid, value: &str| {
+                !value.is_empty()
+                    && reveal_for_use(&session.keys, &session.snapshot, id, Field::Password).is_ok_and(|c| c.expose() == value)
+            };
+            // The login the extension filled into this tab, typed back unchanged, even when
+            // it was another site's login the user confirmed for the page.
+            let filled = request["filled"].as_str().and_then(|i| parse_id(i).ok());
+            if let Some(e) = filled.and_then(|id| session.view.get(id)).filter(|e| e.kind == Kind::Login && !e.deleted) {
+                let user = e.username.as_ref().map_or("", |u| u.expose());
+                if has(e.id, password) && (username.is_empty() || user.trim().is_empty() || same_username(user, username)) {
+                    return json!({"state": "same"});
+                }
+            }
+            let candidates = save_candidates(session, &page, request);
+            // A sign-in's second step has no username on the page; a username-less login
+            // filled with the user's own username is the same login.
+            let saved = |e: &&Entry| {
+                let user = e.username.as_ref().map_or("", |u| u.expose());
+                (username.is_empty() || user.trim().is_empty() || same_username(user, username)) && has(e.id, password)
+            };
+            if candidates.iter().any(saved) {
+                return json!({"state": "same"});
+            }
+            // A change-password form: the login whose password is the current one typed.
+            let current = request["current"].as_str().unwrap_or_default();
+            let found = candidates
+                .iter()
+                .find(|e| {
+                    has(e.id, current)
+                        && (username.is_empty() || same_username(e.username.as_ref().map_or("", |u| u.expose()), username))
+                })
+                .or_else(|| {
+                    candidates.iter().find(|e| {
+                        let user = e.username.as_ref().map_or("", |u| u.expose());
+                        if username.is_empty() {
+                            request["change"] == true && candidates.len() == 1
+                        } else {
+                            same_username(user, username)
+                        }
+                    })
+                });
             match found {
                 None => json!({"state": "new"}),
-                Some(e) => {
-                    let current = reveal_for_use(&session.keys, &session.snapshot, e.id, Field::Password).ok();
-                    if current.is_some_and(|c| c.expose() == password) {
-                        json!({"state": "same"})
-                    } else if e.reprompt || !e.editable || !e.view_password {
-                        json!({"state": "locked"})
-                    } else {
-                        json!({"state": "changed", "id": e.id})
-                    }
-                }
+                Some(e) if e.reprompt || !e.editable || !e.view_password => json!({"state": "locked"}),
+                Some(e) => json!({"state": "changed", "id": e.id}),
             }
         }
         "exclude" => {
@@ -329,7 +380,10 @@ pub(super) fn read(st: &mut State, pairing: &str, request: &Value) -> Value {
                     out.push(json!({"id": e.id, "name": e.name.expose(), "credential_id": b64url(&bytes), "user_name": p.user_name, "reprompt": e.reprompt}));
                 }
             }
-            json!({"items": out})
+            // Whether `passkey.get` will have the person confirm through Nyx Biometrics
+            // (`answer` in browser.rs), which then stands for picking it.
+            let verifies = request["uv"] == "required" && super::sign_in::available();
+            json!({"items": out, "verifies": verifies})
         }
         "passkey.get" => passkey_get(st, pairing, request),
         _ => error(Code::Failed),

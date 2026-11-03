@@ -606,6 +606,13 @@ fn handle(st: &mut State, pairing: &str, browser: &(i32, String), request: &Valu
             launch_app(&["--unlock"]);
             json!({})
         }
+        // The extension unpairs itself. Its key is gone with it, so the reply can't be
+        // sealed: the extension hears "unknown", which it takes as unpaired.
+        Some("unpair") => {
+            st.browser.active.remove(pairing);
+            let _ = st.store.remove_pairing(pairing);
+            json!({})
+        }
         // Shows an item in the Passwords window: for what stays in the app (an SSH key's
         // private half, notes).
         Some("open") => {
@@ -651,12 +658,19 @@ async fn save(st: &mut State, pairing: &str, request: &Value) -> Value {
     }
     let Ok((server, refresh)) = online(st) else { return error(Code::Failed) };
     let Some(session) = st.session.as_mut() else { return error(Code::Locked) };
-    let existing = session
-        .view
-        .matching(&url)
-        .into_iter()
-        .find(|e| e.username.as_ref().map_or("", |u| u.expose()) == username)
-        .map(|e| e.id);
+    let candidates = super::extension::save_candidates(session, &url, request);
+    // The login `check` named, else the page's login with this username.
+    let named = request["id"].as_str().and_then(|i| parse_id(i).ok());
+    let existing = match named {
+        Some(id) => match candidates.iter().find(|e| e.id == id) {
+            Some(e) => Some(e.id),
+            None => return error(Code::Denied),
+        },
+        None => candidates
+            .iter()
+            .find(|e| super::extension::same_username(e.username.as_ref().map_or("", |u| u.expose()), &username))
+            .map(|e| e.id),
+    };
     st.edits += 1;
     let result = match existing {
         Some(id) if session.view.get(id).is_some_and(|e| e.reprompt) => {

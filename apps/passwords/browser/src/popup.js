@@ -21,6 +21,7 @@ const MESSAGES = {
   RateLimited: "Too many requests; wait a minute.",
   NoField: "This item doesn't have that.",
   NoForm: "Nothing on this page to fill.",
+  NoUsernameField: "No username field on this page.",
   NoUrl: "This page can't be filled.",
   NoPassword: "Type the username and password into the page's form first.",
   Clipboard: "Couldn't copy: the desktop has no clipboard for Passwords.",
@@ -545,6 +546,10 @@ function confirmBanner(item) {
 
 const genOptions = { kind: "password", length: 20, uppercase: true, lowercase: true, digits: true, symbols: true, words: 5 };
 
+// A made-up username can be a real alias at a forwarding service: kept until asked for
+// another, not made again each time the generator opens.
+let lastUsername = "";
+
 function generator() {
   const value = el("div", { class: "generated card" });
   let current = "";
@@ -553,6 +558,7 @@ function generator() {
     value.replaceChildren(...[...text].map((ch) => (/\d/.test(ch) ? el("span", { class: "d" }, ch) : /[^\p{L}\p{N}]/u.test(ch) && genOptions.kind === "password" ? el("span", { class: "s" }, ch) : ch)));
   };
   const make = async () => {
+    if (genOptions.kind === "username") value.replaceChildren(el("span", { class: "dim" }, "Making one…"));
     const o = genOptions;
     const r =
       o.kind === "username"
@@ -564,6 +570,7 @@ function generator() {
               : { kind: "passphrase", words: o.words, separator: "-", capitalize: true, number: true },
           });
     const made = r.password ?? r.username;
+    if (r.username) lastUsername = r.username;
     if (made) show(made);
     else value.replaceChildren(el("span", { class: "dim" }, say(r, r.message ?? "Couldn't make one.")));
   };
@@ -599,16 +606,19 @@ function generator() {
   const bar = el(
     "div",
     { class: "bar", style: "margin-top: 14px" },
-    el("button", { class: "primary", title: "Put it in the page's new-password fields", onclick: async () => {
-      const r = await ask({ cmd: "fill_generated", value: current });
+    el("button", { class: "primary", title: genOptions.kind === "username" ? "Put it in the page's username field" : "Put it in the page's new-password fields", onclick: async () => {
+      if (!current) return;
+      const r = await ask({ cmd: "fill_generated", value: current, kind: genOptions.kind });
       if (r.filled) window.close();
-      else toast(say(r, "No empty password field on this page."), true);
+      else toast(say(r, "No password field on this page."), true);
     } }, icon("fill"), "Fill into page"),
     el("button", { onclick: () => navigator.clipboard.writeText(current).then(() => toast("Copied")) }, icon("copy"), "Copy"),
     el("button", { class: "icon", title: "Make another", onclick: make }, icon("refresh")),
   );
   detail.replaceChildren(el("div", { class: "head" }, tile({ kind: "wand" }, 44), el("div", { class: "text" }, el("div", { class: "name" }, "Generator"), el("div", { class: "sub" }, "Passwords keeps what it made until the vault locks"))), kinds, value, options, bar);
-  make();
+  if (genOptions.kind !== "username") make();
+  else if (lastUsername) show(lastUsername);
+  else value.replaceChildren(el("span", { class: "dim" }, "Press ↻ to make one."));
 }
 
 // ---- settings ----
@@ -638,7 +648,8 @@ async function settings() {
       "div",
       { class: "card", style: "margin-bottom: 14px" },
       option("rememberSignIn", "Remember “Sign in with …”", "After you sign in with Google, Apple, GitHub and the like, offer to click it for you next time."),
-      option("passkeys", "Passkeys", `Sites can use and save passkeys in your vault; you confirm each in a small window.${appSays(s.app?.passkeys, "must allow it too")}`),
+      option("passkeys", "Passkeys", `Sites can use and save passkeys in your vault; you confirm each on a small card over the page.${appSays(s.app?.passkeys, "must allow it too")}`),
+      option("passkeyAuto", "Sign in automatically when only one passkey fits", "The card counts down two seconds, then signs in unless you cancel. Where a site asks to verify you, Nyx Biometrics' prompt is the confirmation."),
     ),
     el("div", { class: "section-label" }, "This browser"),
     el(

@@ -107,20 +107,21 @@ with the names in `nyx-passwords-proto`.
 | `copy {id, field}` | `{seconds}` | unlocked; `username`, `password` or `totp` of any item, put on the clipboard by the daemon (cleared later). The value never comes back. Not for items that ask for the master password |
 | `cards {url}`, `identities {url}` | `{items: [{id, name, sub}]}` | unlocked; for the menu under checkout and address fields; cards only on https |
 | `fill_card`, `fill_identity {url, id, frame}` | the item's fields | as `fill`'s frame rule; cards only on https; not items that ask for the master password |
-| `check {url, username, password}` | `{state: new, changed (with id), same, locked or excluded}` | unlocked; asked when a form is submitted, to decide whether the save bar asks. Nothing is stored |
-| `save {url, username, password}` | `{saved: "created" or "updated", id, username}` | unlocked and online; sent only when the user clicks Save in the bar or the popup. A login for the page with the same username gets the new password (the old one goes to its history; not for re-prompting items); otherwise a new login named after the host, for the page's origin |
+| `check {url, page, username, password, current, change, filled}` | `{state: new, changed (with id), same, locked or excluded}` | unlocked; asked when a form is submitted, to decide whether the save bar asks. Nothing is stored. `url` is the form's frame, `page` the tab (counted when on the same site). `same` when a login for either with this username (compared trimmed and without case; an empty one on either side, as on a sign-in's password step, counts) has this password, or `filled` (the login the extension last filled into the tab) does. `changed` names the login whose password is `current` (a change-password form), else the one with this username |
+| `save {url, page, id, username, password}` | `{saved: "created" or "updated", id, username}` | unlocked and online; sent only when the user clicks Save in the bar or the popup. `id` (from `check`'s `changed`, among the logins for `url` and `page`) or else a login for the page with the same username gets the new password (the old one goes to its history; not for re-prompting items); otherwise a new login named after the host, for the page's origin |
 | `exclude {url}` | `{}` | unlocked; the host goes on the never-save list (kept encrypted with the user key) |
 | `add_uri {url, id}` | `{id}` | unlocked and online; the page's origin is added to a login the user filled there after confirming |
 | `security {ids}` | `{items: [{id, weak, reused, old}]}` | unlocked; the security report for those items |
 | `generate {rules}` | `{password}` | unlocked; with the popup's options, or the saved ones |
 | `username {url}` | `{username}` | unlocked; the username generator (an alias service gets only the site's name) |
 | `signin.save {url, provider, username}` | `{saved}` | unlocked and online; universal sign-on: a login for the page with the custom field `nyx:sign-in-with` |
-| `passkey.list {url, rp_id, allow}` | `{items: [{id, name, credential_id, user_name}]}` | passkeys on (in the app and the extension); `rp_id` is the page's host or a registrable domain above it (`matching::valid_rp_id`) |
-| `passkey.get {url, rp_id, id, credential_id, client_data_hash, confirmed}` | `{credential_id, authenticator_data, signature, user_handle}` | as `passkey.list`, `confirmed` (the user picked it in the extension's own window), not for items that ask for the master password |
+| `passkey.list {url, rp_id, allow, uv}` | `{items: [{id, name, credential_id, user_name}], verifies}` | passkeys on (in the app and the extension); `rp_id` is the page's host or a registrable domain above it (`matching::valid_rp_id`). `verifies`: `passkey.get` will have the person confirm through Nyx Biometrics (`uv: "required"` and it's installed) |
+| `passkey.get {url, rp_id, id, credential_id, client_data_hash, uv, confirmed}` | `{credential_id, authenticator_data, signature, user_handle}` | as `passkey.list`, `confirmed` (the user picked it on the extension's card, or Nyx Biometrics confirms it), not for items that ask for the master password |
 | `passkey.create {url, rp_id, rp_name, user_id, user_name, user_display_name, client_data_hash, exclude, rk, into, confirmed}` | `{id, credential_id, attestation_object, authenticator_data, public_key, algorithm}` | as `passkey.get`; `into` is a login matching the page, or none for a new one; refused (`Excluded`) when the site already has one of the listed credentials |
 | `unlock` | `{}` | brings up the Passwords window (while locked, see the unlock window above); returns at once |
 | `open {id}` | `{}` | shows that item in the Passwords window, for what stays in the app (an SSH key's private half, notes); `NotFound` for an item that isn't there |
 | `lock` | `{}` | locks the vault (the popup's lock button) |
+| `unpair` | (`unknown`) | forgets this pairing (the popup's Unpair); the reply can't be sealed without its key |
 
 Fills, copies and changes share a limit of 30 a minute per pairing.
 
@@ -141,15 +142,22 @@ Fills, copies and changes share a limit of 30 a minute per pairing.
 - **Content script** (every http and https frame, isolated from the page's scripts):
   notices login, sign-up, one-time-code, card and address fields, form submissions and
   clicks on "Sign in with …". It sees no vault value.
-- **The menu under a field, the save bar, the passkey window:** this extension's own
-  pages (`menu.html`, `bar.html`, `confirm.html`). The menu and bar are frames inside a
-  closed shadow root, so the page can neither read nor press them; each acts only for
-  the frame and tab it was opened for, under a random token.
+- **The menu under a field, the save bar, the passkey card:** this extension's own
+  pages (`menu.html`, `bar.html`, `passkey.html`). They are frames inside a closed
+  shadow root, so the page can neither read nor press them; each acts only for the
+  frame and tab it was opened for, under a random token.
 - **Passkey page script** (`page.js`, only when passkeys are on in both places): runs
   in the page's world and hands `navigator.credentials.create` and `.get` for public
   keys to the extension first. The extension builds `clientDataJSON` from the frame's
-  origin as the browser reports it; the user confirms in the extension's own window;
-  "Use the browser's own" falls back to the browser.
+  origin as the browser reports it. The user confirms on the passkey card, top right
+  over the page: the content script keeps it on top and unstyled by the page, and an
+  answer counts only while it is (else the choice moves to a small window titled
+  "Passkey · Nyx Passwords"). With one passkey to use there's nothing to pick: where
+  the site requires user verification and Nyx Biometrics is installed, its prompt is
+  the confirmation (`passkey.list` says so with `verifies`); otherwise the card counts
+  down two seconds and goes on unless cancelled ("Sign in automatically when only one
+  passkey fits" in the extension's settings). "Use the browser's own" falls back to
+  the browser, as does a request made before the content script has loaded.
 
 ## Filling as the page loads
 

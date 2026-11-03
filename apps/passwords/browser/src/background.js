@@ -4,7 +4,7 @@
 //
 // Who may ask for what is decided here, from what the browser says about the sender,
 // never from what a page says: content scripts report fields and form submissions; the
-// in-page menu, the save bar and the passkey window are this extension's own pages, so
+// in-page menu, the save bar and the passkey card are this extension's own pages, so
 // a page can neither read nor forge them.
 
 const api = globalThis.browser ?? globalThis.chrome;
@@ -15,29 +15,56 @@ const own = (page) => api.runtime.getURL(page);
 
 // ---- the native host ----
 
+// The host answers one frame at a time, in order. Only the frame at the head of the
+// queue is timed: the ones behind it wait for it.
 let port = null;
 const waiting = [];
+let headTimer = null;
 
-function native(frame) {
+function armHead() {
+  clearTimeout(headTimer);
+  if (waiting.length) headTimer = setTimeout(dropPort, waiting[0].wait);
+}
+
+// Not installed, the host stopped, or it stopped answering: everyone waiting hears so.
+// A late reply on the same port would answer the wrong request, so the port goes too.
+function dropPort() {
+  clearTimeout(headTimer);
+  const stuck = port;
+  port = null;
+  try {
+    stuck?.disconnect();
+  } catch {}
+  while (waiting.length) waiting.shift().resolve({ t: "unavailable" });
+}
+
+function native(frame, wait = 15000) {
   return new Promise((resolve) => {
     if (!port) {
+      let p;
       try {
-        port = api.runtime.connectNative(HOST);
+        p = api.runtime.connectNative(HOST);
       } catch {
         resolve({ t: "unavailable" });
         return;
       }
-      port.onMessage.addListener((reply) => waiting.shift()?.(reply));
-      port.onDisconnect.addListener(() => {
-        port = null;
-        // Not installed, or the host stopped: everyone waiting hears so.
-        while (waiting.length) waiting.shift()({ t: "unavailable" });
+      port = p;
+      p.onMessage.addListener((reply) => {
+        if (port !== p) return;
+        waiting.shift()?.resolve(reply);
+        armHead();
       });
+      p.onDisconnect.addListener(() => port === p && dropPort());
     }
-    waiting.push(resolve);
+    waiting.push({ resolve, wait });
+    if (waiting.length === 1) armHead();
     port.postMessage(frame);
   });
 }
+
+// How long a request may take once the host has it: some wait for the server, an alias
+// service or the person (Nyx Biometrics' prompt).
+const SLOW = { save: 30000, add_uri: 30000, "signin.save": 30000, username: 60000, "passkey.get": 120000, "passkey.create": 120000 };
 
 // ---- bytes ----
 
@@ -95,7 +122,7 @@ async function request(body) {
     key,
     enc.encode(JSON.stringify(body)),
   );
-  const reply = await native({ t: "msg", p: pairing.id, n, c: b64(concat(iv, sealed)) });
+  const reply = await native({ t: "msg", p: pairing.id, n, c: b64(concat(iv, sealed)) }, SLOW[body.r]);
   if (reply.t !== "msg") {
     if (reply.t === "unknown") await api.storage.local.remove("pairing");
     return { state: reply.t === "unknown" ? "unpaired" : reply.t, error: reply.error };
@@ -122,7 +149,7 @@ async function showUnlock() {
 
 // ---- this browser's settings ----
 
-const DEFAULTS = { fillOnLoad: true, inlineMenu: true, copyTotp: true, passkeys: false, rememberSignIn: true };
+const DEFAULTS = { fillOnLoad: true, inlineMenu: true, copyTotp: true, passkeys: false, passkeyAuto: true, rememberSignIn: true };
 
 async function prefs() {
   const { prefs: stored } = await api.storage.local.get("prefs");
@@ -150,23 +177,41 @@ async function inFrame(tabId, frameId, func, args) {
   return result?.result;
 }
 
-// These run in the page. Each fills only if the frame is still the one asked about,
-// and only visible fields; a field the user already typed in is left alone on page load.
+// These run in the page, in the content script's world (they share its globals). Each
+// fills only if the frame is still the one asked about, and only visible fields. They
+// set `__nyxFilling` so content.js doesn't open its menu on the focus they move, and
+// keep to the form of `__nyxAnchor` (the field the menu was opened under) when there is
+// one. Each is sent on its own, so each brings its own helpers.
 
-function fillLogin(origin, username, password, onlyEmpty) {
+function fillLogin(origin, username, password, onLoad) {
   if (location.origin !== origin) return false;
-  const visible = (el) => el.offsetParent !== null && !el.disabled && !el.readOnly;
-  const fields = [...document.querySelectorAll("input")].filter(visible);
-  const passwordField = fields.find((el) => el.type === "password");
-  // The username is the nearest field before the password one (or the only form field).
-  const nearestFirst = (passwordField ? fields.slice(0, fields.indexOf(passwordField)) : fields).reverse();
-  const userField =
-    nearestFirst.find((el) => /username|email/.test(el.autocomplete)) ??
-    nearestFirst.find((el) => ["text", "email", "tel"].includes(el.type));
+  globalThis.__nyxFilling = Date.now();
+  const visible = (el) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && el.checkVisibility?.({ visibilityProperty: true }) !== false && !el.disabled && !el.readOnly;
+  };
+  const textLike = (el) => ["text", "email", "tel"].includes(el.type);
+  const all = [...document.querySelectorAll("input")].filter(visible);
+  const anchor = globalThis.__nyxAnchor?.isConnected ? globalThis.__nyxAnchor : document.activeElement;
+  const inForm = anchor?.form ? all.filter((el) => el.form === anchor.form) : [];
+  const fields = inForm.some((el) => el.type === "password" || textLike(el)) ? inForm : all;
+  const passwordField = fields.find((el) => el.type === "password" && el.autocomplete !== "new-password") ?? fields.find((el) => el.type === "password");
+  // With a password field, the username is the nearest field before it; without one (a
+  // sign-in's first step), the first field that looks like a username.
+  const named = (el) => /user|login|e.?mail|account/i.test(`${el.name} ${el.id}`);
+  const before = passwordField ? fields.slice(0, fields.indexOf(passwordField)).reverse() : [];
+  const userField = passwordField
+    ? before.find((el) => /username|email/.test(el.autocomplete)) ?? before.find(textLike)
+    : fields.find((el) => /username|email/.test(el.autocomplete)) ??
+      fields.find((el) => textLike(el) && (el.type === "email" || named(el))) ??
+      fields.find(textLike);
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+  // As the page loads, the cursor stays where it is, and a field the user is in or
+  // already typed in is left alone.
   const set = (el, value) => {
-    if (!el || !value || (onlyEmpty && el.value)) return false;
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
-    el.focus();
+    if (!el || !value) return false;
+    if (onLoad && (el.value || el === document.activeElement)) return false;
+    if (!onLoad) el.focus();
     setter.call(el, value);
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
@@ -177,30 +222,77 @@ function fillLogin(origin, username, password, onlyEmpty) {
   return a || b;
 }
 
+// A new password: into the form's new-password fields, never its current-password one.
 function fillNew(origin, password) {
   if (location.origin !== origin) return 0;
+  globalThis.__nyxFilling = Date.now();
+  const visible = (el) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && el.checkVisibility?.({ visibilityProperty: true }) !== false && !el.disabled && !el.readOnly;
+  };
+  const all = [...document.querySelectorAll('input[type="password"]')].filter(visible);
+  const anchor = globalThis.__nyxAnchor?.isConnected ? globalThis.__nyxAnchor : document.activeElement;
+  const inForm = anchor?.form ? all.filter((el) => el.form === anchor.form) : [];
+  const fields = inForm.length ? inForm : all;
+  const current = (el) => el.autocomplete === "current-password" || /current|old/i.test(`${el.name} ${el.id}`);
+  let targets = fields.filter((el) => !current(el));
+  const marked = targets.filter((el) => el.autocomplete === "new-password");
+  // Current, new and confirm, unmarked: the first is the current one.
+  if (marked.length) targets = marked;
+  else if (targets.length === 3) targets = targets.slice(1);
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
-  let n = 0;
-  for (const el of document.querySelectorAll('input[type="password"]')) {
-    if (el.offsetParent === null || el.value) continue;
+  for (const el of targets) {
     setter.call(el, password);
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
-    n++;
   }
-  return n;
+  targets[0]?.focus();
+  return targets.length;
+}
+
+// A made-up username (or alias) into the form's username field.
+function fillUsername(origin, value) {
+  if (location.origin !== origin) return false;
+  globalThis.__nyxFilling = Date.now();
+  const visible = (el) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && el.checkVisibility?.({ visibilityProperty: true }) !== false && !el.disabled && !el.readOnly;
+  };
+  const textLike = (el) => ["text", "email", "tel"].includes(el.type);
+  const all = [...document.querySelectorAll("input")].filter(visible);
+  const anchor = globalThis.__nyxAnchor?.isConnected ? globalThis.__nyxAnchor : document.activeElement;
+  const fields = anchor?.form ? all.filter((el) => el.form === anchor.form) : all;
+  const password = fields.findIndex((el) => el.type === "password");
+  const before = password < 0 ? fields : fields.slice(0, password);
+  const field =
+    (textLike(anchor) && fields.includes(anchor) ? anchor : null) ??
+    before.find((el) => /username|email/.test(el.autocomplete)) ??
+    before.find((el) => textLike(el) && /user|login|e.?mail|account/i.test(`${el.name} ${el.id}`)) ??
+    before.findLast(textLike);
+  if (!field) return false;
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+  field.focus();
+  setter.call(field, value);
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+  field.dispatchEvent(new Event("change", { bubbles: true }));
+  return true;
 }
 
 // A one-time code: into a code field, or spread over one box per digit.
 function fillCode(origin, code) {
   if (location.origin !== origin) return false;
+  globalThis.__nyxFilling = Date.now();
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
   const set = (el, v) => {
     setter.call(el, v);
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
   };
-  const inputs = [...document.querySelectorAll("input")].filter((el) => el.offsetParent !== null && !el.disabled);
+  const visible = (el) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && el.checkVisibility?.({ visibilityProperty: true }) !== false && !el.disabled;
+  };
+  const inputs = [...document.querySelectorAll("input")].filter(visible);
   const boxes = inputs.filter((el) => el.maxLength === 1);
   if (boxes.length >= code.length) {
     code.split("").forEach((c, i) => set(boxes[i], c));
@@ -217,6 +309,7 @@ function fillCode(origin, code) {
 // A card or identity, by the fields' autocomplete tokens, else their names.
 function fillForm(origin, kind, values) {
   if (location.origin !== origin) return 0;
+  globalThis.__nyxFilling = Date.now();
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
   const map =
     kind === "card"
@@ -243,14 +336,19 @@ function fillForm(origin, kind, values) {
           ["country", /country/i, values.country],
           ["username", /user.?name/i, values.username],
         ];
-  const inputs = [...document.querySelectorAll("input, select")].filter((el) => el.offsetParent !== null && !el.disabled);
+  const visible = (el) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && el.checkVisibility?.({ visibilityProperty: true }) !== false && !el.disabled;
+  };
+  const inputs = [...document.querySelectorAll("input, select")].filter(visible);
   let n = 0;
   for (const [token, pattern, value] of map) {
     if (!value) continue;
     const el =
       inputs.find((i) => (i.autocomplete || "").split(" ").includes(token)) ??
       inputs.find((i) => !i.autocomplete && pattern.test(`${i.name} ${i.id} ${i.placeholder ?? ""} ${i.getAttribute("aria-label") ?? ""}`));
-    if (!el || el.value) continue;
+    // A dropdown always has a value (its first option), so only text fields count as typed in.
+    if (!el || (el.tagName !== "SELECT" && el.value)) continue;
     if (el.tagName === "SELECT") {
       const option = [...el.options].find((o) => o.value === value || o.text.trim() === value || o.value === value.padStart(2, "0"));
       if (!option) continue;
@@ -270,7 +368,7 @@ function clickProvider(origin, provider) {
   if (location.origin !== origin) return false;
   const words = { google: /google/i, apple: /apple/i, microsoft: /microsoft|outlook|live\.com/i, github: /github/i, facebook: /facebook|meta/i, gitlab: /gitlab/i, twitter: /twitter|\bx\b/i, linkedin: /linkedin/i, amazon: /amazon/i, slack: /slack/i }[provider];
   if (!words) return false;
-  const candidates = [...document.querySelectorAll("a, button, [role=button], input[type=submit]")].filter((el) => el.offsetParent !== null);
+  const candidates = [...document.querySelectorAll("a, button, [role=button], input[type=submit]")].filter((el) => el.getClientRects().length > 0);
   const el = candidates.find((c) => {
     const text = `${c.textContent} ${c.getAttribute("aria-label") ?? ""} ${c.getAttribute("title") ?? ""} ${c.value ?? ""} ${c.href ?? ""}`;
     return words.test(text) && /sign|log|continue|with|auth|oauth/i.test(text);
@@ -280,49 +378,67 @@ function clickProvider(origin, provider) {
   return true;
 }
 
-function readForm(origin) {
-  if (location.origin !== origin) return null;
-  const fields = [...document.querySelectorAll("input")].filter((el) => el.offsetParent !== null);
+function readForm() {
+  const fields = [...document.querySelectorAll("input")].filter((el) => el.getClientRects().length > 0);
   const passwordField = fields.find((el) => el.type === "password" && el.value);
   if (!passwordField) return null;
   const nearestFirst = fields.slice(0, fields.indexOf(passwordField)).reverse();
   const userField =
     nearestFirst.find((el) => /username|email/.test(el.autocomplete) && el.value) ??
     nearestFirst.find((el) => ["text", "email", "tel"].includes(el.type) && el.value);
-  return { username: userField?.value ?? "", password: passwordField.value };
+  return { username: userField?.value ?? "", password: passwordField.value, url: location.href };
+}
+
+// Whether this frame shows a login (or new-password) form: its address, or null.
+function loginFormHere() {
+  const shown = (el) => el.getClientRects().length > 0 && !el.disabled;
+  const found = [...document.querySelectorAll("input")].some((el) => shown(el) && (el.type === "password" || /username/.test(el.autocomplete)));
+  return found ? location.href : null;
+}
+
+function passwordFieldShown() {
+  return [...document.querySelectorAll('input[type="password"]')].some((el) => el.getClientRects().length > 0 && !el.disabled);
+}
+
+/// The frame of a tab that has a login form, the top one first (its id and address).
+async function loginFrame(tab) {
+  const found = await api.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, func: loginFormHere }).catch(() => []);
+  const hit = found.find((r) => r.frameId === 0 && r.result) ?? found.find((r) => r.result);
+  return hit ? { frameId: hit.frameId, frameUrl: hit.result } : { frameId: 0, frameUrl: tab.url };
 }
 
 // ---- filling ----
 
-/// Fills a login into a frame of a tab: the app checks the item belongs to the page (or
-/// was confirmed for it) and the frame's site.
-async function fill(tab, id, { frameId = 0, frameUrl, confirmed = false, trigger } = {}) {
+/// Fills a login into a frame of a tab (the one with a login form, unless named): the
+/// app checks the item belongs to the page (or was confirmed for it) and the frame's site.
+async function fill(tab, id, { frameId, frameUrl, confirmed = false, trigger } = {}) {
+  if (frameId === undefined) ({ frameId, frameUrl } = await loginFrame(tab));
   const frame = frameUrl ?? tab.url;
   const answer = await request({ r: "fill", url: tab.url, id, frame, confirmed, trigger });
   if (answer.error || answer.state) return answer;
   const done = await inFrame(tab.id, frameId, fillLogin, [originOf(frame), answer.username, answer.password, trigger === "load"]);
   if (!done) return { error: "NoForm" };
-  rememberUsed(tab.id, answer.id);
+  lastFilled.set(tab.id, { id: answer.id, at: Date.now() });
   if (answer.has_totp && trigger !== "load" && (await prefs()).copyTotp) {
     request({ r: "copy", id: answer.id, field: "totp" }).catch(() => {});
   }
   return { filled: true, id: answer.id };
 }
 
-const lastUsed = new Map();
-function rememberUsed(tabId, id) {
-  lastUsed.set(tabId, id);
-}
+// The login last filled into each tab: typed back as filled, it's no new login to save.
+const lastFilled = new Map();
+const FILLED_FOR = 10 * 60 * 1000;
 
 async function save() {
   const tab = await activeTab();
   if (!tab) return { error: "NoUrl" };
-  const form = await inFrame(tab.id, 0, readForm, [originOf(tab.url)]);
+  const forms = await api.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, func: readForm }).catch(() => []);
+  const form = (forms.find((r) => r.frameId === 0 && r.result) ?? forms.find((r) => r.result))?.result;
   if (!form?.password) return { error: "NoPassword" };
-  return request({ r: "save", url: tab.url, username: form.username, password: form.password });
+  return request({ r: "save", url: form.url, page: tab.url, username: form.username, password: form.password });
 }
 
-// ---- the in-page menu, the save bar and the passkey window ----
+// ---- the in-page menu, the save bar and the passkey card ----
 
 // Each is opened for one frame of one tab, under a random token; it may act only for
 // that frame, and only while the token lives.
@@ -338,8 +454,9 @@ function open(kind, data) {
 function owned(message, sender, page) {
   const entry = opened.get(message.token);
   if (!entry || !sender.url?.startsWith(own(page))) return null;
-  // A page's own frames can't open these; they come from this extension.
-  if (entry.tabId !== undefined && sender.tab && sender.tab.id !== entry.tabId) return null;
+  // A page's own frames can't open these; they come from this extension (in the tab, or
+  // in the passkey window opened for it).
+  if (entry.tabId !== undefined && sender.tab && sender.tab.id !== entry.tabId && sender.tab.id !== entry.windowTab) return null;
   return entry;
 }
 
@@ -396,37 +513,96 @@ async function menuAct(entry, message) {
 
 // Saving: a submitted form's login waits here (in memory, two minutes at most) while
 // the bar asks.
+
+// One submit is seen twice (the button's click, then the form's submit event).
+const submits = new Map();
+// The username typed in a sign-in's first step, for the password step after it.
+const usernameSteps = new Map();
+const STEP_FOR = 10 * 60 * 1000;
+// Near enough to a site for a sign-in's two steps (accounts.example.com, then
+// login.example.com); the app decides what matches.
+const nearSite = (a, b) => {
+  try {
+    const tail = (u) => new URL(u).hostname.split(".").slice(-2).join(".");
+    return tail(a) === tail(b);
+  } catch {
+    return false;
+  }
+};
+
+function rememberUsernameStep(tab, frameUrl, username) {
+  if (!username) return;
+  usernameSteps.set(tab.id, { username, url: frameUrl, at: Date.now() });
+}
+
 async function offerSave(tab, frameUrl, form) {
   if (!form.password) return;
-  const answer = await request({ r: "check", url: frameUrl, username: form.username, password: form.password });
+  const key = `${frameUrl}\n${form.username}\n${form.password}`;
+  const at = Date.now();
+  if (submits.get(tab.id)?.key === key) return;
+  submits.set(tab.id, { key, at });
+  setTimeout(() => submits.get(tab.id)?.at === at && submits.delete(tab.id), 5000);
+  let username = form.username;
+  const step = usernameSteps.get(tab.id);
+  if (!username && step && at - step.at < STEP_FOR && nearSite(step.url, frameUrl)) username = step.username;
+  const filled = lastFilled.get(tab.id);
+  const answer = await request({
+    r: "check",
+    url: frameUrl,
+    page: tab.url,
+    username,
+    password: form.password,
+    current: form.current,
+    change: form.change,
+    filled: filled && at - filled.at < FILLED_FOR ? filled.id : null,
+  });
   if (answer.state !== "new" && answer.state !== "changed") return;
   const t = open("bar", {
     tabId: tab.id,
     frameUrl,
-    username: form.username,
+    page: tab.url,
+    id: answer.id ?? null,
+    username,
     password: form.password,
     question: answer.state,
+    change: form.change,
     host: new URL(frameUrl).host,
   });
   setTimeout(() => {
     const e = opened.get(t);
     if (e) e.password = "";
   }, 2 * 60 * 1000);
-  showBar(tab.id, t);
+  pendingBars.set(tab.id, t);
+  setTimeout(() => settleBar(tab.id, t), 2500);
 }
 
-async function showBar(tabId, t) {
-  // After a sign-in the page usually navigates: try now, and again once it's loaded.
-  const send = () => api.tabs.sendMessage(tabId, { cmd: "bar", token: t }, { frameId: 0 }).catch(() => {});
-  send();
-  pendingBars.set(tabId, t);
-}
+// The bar waits for the page to move on from the sign-in: a password field still
+// showing then means it failed (a typo isn't worth saving), or the form wasn't one.
+// A change-password form often stays on its settings page, so it doesn't wait for that.
 const pendingBars = new Map();
+async function settleBar(tabId, t) {
+  const entry = opened.get(t);
+  if (pendingBars.get(tabId) !== t || !entry) return;
+  const tab = await api.tabs.get(tabId).catch(() => null);
+  // Still loading: the load's end settles it.
+  if (!tab || tab.status === "loading") return;
+  pendingBars.delete(tabId);
+  const shown = entry.change ? [] : await api.scripting.executeScript({ target: { tabId, allFrames: true }, func: passwordFieldShown }).catch(() => []);
+  if (shown.some((r) => r.result)) {
+    opened.delete(t);
+    return;
+  }
+  showBar(tabId, t);
+}
+
+function showBar(tabId, t) {
+  api.tabs.sendMessage(tabId, { cmd: "bar", token: t }, { frameId: 0 }).catch(() => {});
+}
 
 async function barAnswer(entry, choice) {
   switch (choice) {
     case "save":
-      return request({ r: "save", url: entry.frameUrl, username: entry.username, password: entry.password });
+      return request({ r: "save", url: entry.frameUrl, page: entry.page, id: entry.id, username: entry.username, password: entry.password });
     case "never":
       return request({ r: "exclude", url: entry.frameUrl });
     case "remember":
@@ -455,7 +631,9 @@ async function backFromProvider(tabId, url) {
 
 // The page asked for a passkey (through the content script, which only relays). The
 // client data is built here, with the frame's origin as the browser reports it; the
-// user picks or confirms in this extension's own window; the app signs.
+// user picks or confirms on this extension's own card; the app signs. With one passkey
+// to use there's nothing to pick: Nyx Biometrics' prompt confirms it where the site
+// asks for that, else the card counts down and goes on unless cancelled.
 async function passkey(kind, options, sender) {
   const settings = await request({ r: "settings" });
   if (!settings.passkeys || !(await prefs()).passkeys) return { fallback: true };
@@ -469,22 +647,29 @@ async function passkey(kind, options, sender) {
     crossOrigin: sender.frameId !== 0,
   });
   const hash = b64url(await crypto.subtle.digest("SHA-256", enc.encode(clientData)));
+  const uv = options.userVerification ?? "preferred";
   let choices = [];
+  let verifies = false;
   if (kind === "get") {
-    const found = await request({ r: "passkey.list", url: sender.url, rp_id: rpId, allow: (options.allowCredentials ?? []).map((c) => c.id) });
+    const found = await request({ r: "passkey.list", url: sender.url, rp_id: rpId, uv, allow: (options.allowCredentials ?? []).map((c) => c.id) });
     if (found.error) return { fallback: true };
     choices = found.items ?? [];
     if (!choices.length) return { fallback: true };
+    verifies = found.verifies === true;
   } else {
     const found = await request({ r: "match", url: sender.url });
     choices = (found.items ?? []).map((i) => ({ id: i.id, name: i.name, user_name: i.username }));
   }
-  const choice = await confirmInWindow({ ask: kind, host: page.host, rpId, user: options.user?.name ?? "", choices });
+  const one = kind === "get" && choices.length === 1;
+  const card = { ask: kind, host: page.host, rpId, user: options.user?.name ?? "", choices };
+  const choice = one && verifies ? { index: 0 } : await confirmOnPage(sender.tab, { ...card, auto: one && (await prefs()).passkeyAuto });
   if (!choice) return { fallback: choice === null };
   if (kind === "get") {
     const picked = choices[choice.index];
-    const a = await request({ r: "passkey.get", url: sender.url, rp_id: rpId, id: picked.id, credential_id: picked.credential_id, client_data_hash: hash, uv: options.userVerification ?? "preferred", confirmed: true });
+    if (!picked) return { error: "NotFound" };
+    const a = await request({ r: "passkey.get", url: sender.url, rp_id: rpId, id: picked.id, credential_id: picked.credential_id, client_data_hash: hash, uv, confirmed: true });
     if (a.error) return { error: a.error };
+    if (one && verifies) notifyOnPage(sender.tab, { ask: "done", host: page.host, user: picked.user_name || picked.name });
     return { credential: { id: a.credential_id, clientDataJSON: b64url(enc.encode(clientData)), authenticatorData: a.authenticator_data, signature: a.signature, userHandle: a.user_handle } };
   }
   const made = await request({
@@ -515,24 +700,75 @@ async function passkey(kind, options, sender) {
   };
 }
 
-// The user's confirmation in a small window of this extension's own: a page can't draw
-// it. `null` means "use the browser's own instead"; `false`, declined.
-function confirmInWindow(data) {
+// The user's choice on a card of this extension's own over the page: the page can't
+// read or press it, and content.js keeps it on top and unchanged (an answer counts only
+// while it is). Where the page can't show it (no content script, fullscreen), a small
+// window instead. `null` means "use the browser's own instead"; `false`, declined.
+const PASSKEY_WAIT = 3 * 60 * 1000;
+
+function confirmOnPage(tab, data) {
   return new Promise((resolve) => {
-    const t = open("confirm", { ...data, resolve });
-    api.windows.create({ url: own(`confirm.html#${t}`), type: "popup", width: 420, height: 460 }).then((w) => {
+    const t = open("passkey", { tabId: tab.id, ...data, resolve });
+    setTimeout(() => answerPasskey(t, false), PASSKEY_WAIT);
+    api.tabs.sendMessage(tab.id, { cmd: "passkey-card", token: t }, { frameId: 0 }).then(
+      (shown) => shown === true || confirmInWindow(t),
+      () => confirmInWindow(t),
+    );
+  });
+}
+
+// After Nyx Biometrics confirmed it: the card, briefly, saying who signed in.
+function notifyOnPage(tab, data) {
+  const t = open("passkey", { tabId: tab.id, ...data });
+  api.tabs.sendMessage(tab.id, { cmd: "passkey-card", token: t }, { frameId: 0 }).catch(() => {});
+}
+
+function answerPasskey(t, choice) {
+  const e = opened.get(t);
+  if (!e?.resolve) return;
+  opened.delete(t);
+  e.resolve(choice);
+}
+
+// Titled "Passkey · Nyx Passwords" from the start (Firefox's `titlePreface`), so the
+// desktop can float it before the page has loaded.
+function confirmInWindow(t) {
+  const e = opened.get(t);
+  if (!e) return;
+  const title = typeof api.runtime.getBrowserInfo === "function" ? { titlePreface: "Passkey · Nyx Passwords — " } : {};
+  api.windows.create({ url: own(`passkey.html#${t}`), type: "popup", width: 420, height: 460, ...title }).then(
+    (w) => {
+      e.windowTab = w.tabs?.[0]?.id;
       const gone = (id) => {
         if (id !== w.id) return;
         api.windows.onRemoved.removeListener(gone);
-        const e = opened.get(t);
-        if (e) {
-          opened.delete(t);
-          resolve(false);
-        }
+        answerPasskey(t, false);
       };
       api.windows.onRemoved.addListener(gone);
-    });
-  });
+    },
+    () => answerPasskey(t, false),
+  );
+}
+
+// A card's answer counts only while content.js finds it on top and unchanged; else the
+// choice moves to the window.
+async function passkeyAnswer(t, entry, message, sender) {
+  if (entry.ask === "done") {
+    opened.delete(t);
+    return {};
+  }
+  const choice = message.choice === undefined ? false : message.choice;
+  const onCard = sender.tab?.id === entry.tabId;
+  if (onCard && choice !== false) {
+    const shown = await api.tabs.sendMessage(entry.tabId, { cmd: "passkey-check" }, { frameId: 0 }).catch(() => false);
+    if (shown !== true) {
+      api.tabs.sendMessage(entry.tabId, { cmd: "passkey-close" }, { frameId: 0 }).catch(() => {});
+      confirmInWindow(t);
+      return { moved: true };
+    }
+  }
+  answerPasskey(t, choice);
+  return {};
 }
 
 let passkeyScript = false;
@@ -578,14 +814,16 @@ api.tabs.onUpdated.addListener((tabId, change, tab) => {
   if (change.status === "complete" && tab.url) {
     backFromProvider(tabId, tab.url);
     const t = pendingBars.get(tabId);
-    if (t && opened.has(t)) api.tabs.sendMessage(tabId, { cmd: "bar", token: t }, { frameId: 0 }).catch(() => {});
-    pendingBars.delete(tabId);
+    if (t) settleBar(tabId, t);
   }
 });
 api.tabs.onRemoved.addListener((tabId) => {
-  lastUsed.delete(tabId);
+  lastFilled.delete(tabId);
+  usernameSteps.delete(tabId);
+  submits.delete(tabId);
   providerClicks.delete(tabId);
   pendingBars.delete(tabId);
+  for (const [t, e] of opened) if (e.kind === "passkey" && e.tabId === tabId) answerPasskey(t, false);
 });
 api.windows.onFocusChanged.addListener((w) => {
   if (w !== api.windows.WINDOW_ID_NONE) reportActive();
@@ -621,6 +859,7 @@ async function fromPopup(message) {
     case "pair":
       return pair();
     case "unpair":
+      await request({ r: "unpair" }).catch(() => {});
       await api.storage.local.remove("pairing");
       return { state: "unpaired" };
     case "match": {
@@ -645,11 +884,8 @@ async function fromPopup(message) {
     case "totp":
       if (!tab) return { error: "NoUrl" };
       return request({ r: "totp", url: tab.url, id: message.id });
-    case "generate": {
-      const answer = await request({ r: "generate", rules: message.rules });
-      if (!answer.password || !message.into || !tab) return answer;
-      return { ...answer, filled: await inFrame(tab.id, 0, fillNew, [originOf(tab.url), answer.password]) };
-    }
+    case "generate":
+      return request({ r: "generate", rules: message.rules });
     case "username":
       return request({ r: "username", url: tab?.url ?? "" });
     case "unlock":
@@ -665,7 +901,10 @@ async function fromPopup(message) {
     case "fill_generated": {
       const value = String(message.value ?? "");
       if (!tab || !value || value.length > 256) return { error: "NoForm" };
-      return { filled: await inFrame(tab.id, 0, fillNew, [originOf(tab.url), value]) };
+      const { frameId, frameUrl } = await loginFrame(tab);
+      const username = message.kind === "username";
+      const filled = await inFrame(tab.id, frameId, username ? fillUsername : fillNew, [originOf(frameUrl), value]);
+      return filled ? { filled } : { error: username ? "NoUsernameField" : "NoForm" };
     }
     case "signin":
       if (!tab) return { error: "NoUrl" };
@@ -700,6 +939,12 @@ async function fromPage(message, sender) {
     case "field": {
       if (!(await prefs()).inlineMenu) return null;
       const field = ["login", "new-password", "otp", "card", "identity"].includes(message.field) ? message.field : "login";
+      // A login field on a site with nothing saved gets no menu ("No logins" under every
+      // email field); while locked it does, to unlock.
+      if (field === "login") {
+        const found = await request({ r: "match", url: tab.url }).catch(() => ({}));
+        if (Array.isArray(found.items) && !found.items.length) return null;
+      }
       return { token: open("menu", { tabId: tab.id, frameId: sender.frameId, frameUrl, field }) };
     }
     case "loaded": {
@@ -707,7 +952,15 @@ async function fromPage(message, sender) {
       return fill(tab, null, { frameId: sender.frameId, frameUrl, trigger: "load" });
     }
     case "submitted":
-      offerSave(tab, frameUrl, { username: String(message.username ?? "").slice(0, 512), password: String(message.password ?? "").slice(0, 1024) });
+      offerSave(tab, frameUrl, {
+        username: String(message.username ?? "").slice(0, 512),
+        password: String(message.password ?? "").slice(0, 1024),
+        current: String(message.current ?? "").slice(0, 1024),
+        change: message.change === true,
+      });
+      return {};
+    case "username-step":
+      rememberUsernameStep(tab, frameUrl, String(message.username ?? "").slice(0, 512));
       return {};
     case "provider":
       providerClicks.set(tab.id, { provider: String(message.provider), origin: originOf(tab.url), at: Date.now() });
@@ -737,16 +990,15 @@ api.runtime.onMessage.addListener((message, sender, reply) => {
       opened.delete(message.token);
       answer = barAnswer(entry, message.choice);
     }
-  } else if (cmd.startsWith("confirm.")) {
-    const entry = owned(message, sender, "confirm.html");
-    if (!entry || entry.kind !== "confirm") return false;
-    if (cmd === "confirm.state") {
-      answer = Promise.resolve({ ask: entry.ask, host: entry.host, rpId: entry.rpId, user: entry.user, choices: entry.choices });
+  } else if (cmd.startsWith("passkey.")) {
+    const entry = owned(message, sender, "passkey.html");
+    if (!entry || entry.kind !== "passkey") return false;
+    if (cmd === "passkey.state") {
+      const inWindow = sender.tab?.id !== entry.tabId;
+      answer = Promise.resolve({ ask: entry.ask, host: entry.host, rpId: entry.rpId, user: entry.user, choices: entry.choices, auto: entry.auto && !inWindow, inWindow });
     } else {
-      opened.delete(message.token);
       // `null` is "the browser's own", kept apart from a refusal.
-      entry.resolve(message.choice === undefined ? false : message.choice);
-      answer = Promise.resolve({});
+      answer = passkeyAnswer(message.token, entry, message, sender);
     }
   } else if (cmd === "icon" && sender.url?.startsWith(own(""))) {
     answer = request({ r: "icon", host: String(message.host ?? "") });
@@ -767,7 +1019,7 @@ api.runtime.onMessage.addListener((message, sender, reply) => {
 
 let cycle = { tabId: null, at: 0, index: 0 };
 
-async function fillShortcut() {
+async function fillShortcut(target) {
   const tab = await activeTab();
   if (!tab) return;
   const found = await request({ r: "match", url: tab.url });
@@ -779,7 +1031,7 @@ async function fillShortcut() {
   // Pressed again soon: the next login.
   cycle = cycle.tabId === tab.id && Date.now() - cycle.at < 10000 ? { ...cycle, index: cycle.index + 1 } : { tabId: tab.id, index: 0 };
   cycle.at = Date.now();
-  await fill(tab, items[cycle.index % items.length].id);
+  await fill(tab, items[cycle.index % items.length].id, target);
 }
 
 api.commands.onCommand.addListener(async (command) => {
@@ -787,7 +1039,9 @@ api.commands.onCommand.addListener(async (command) => {
   if (command === "generate-password") {
     const tab = await activeTab();
     const answer = await request({ r: "generate" });
-    if (tab && answer.password) inFrame(tab.id, 0, fillNew, [originOf(tab.url), answer.password]);
+    if (!tab || !answer.password) return;
+    const { frameId, frameUrl } = await loginFrame(tab);
+    inFrame(tab.id, frameId, fillNew, [originOf(frameUrl), answer.password]);
   }
 });
 
@@ -801,7 +1055,7 @@ api.runtime.onInstalled.addListener((details) => {
 });
 api.contextMenus.onClicked.addListener(async (info, tab) => {
   if (!tab || !/^https?:/.test(tab.url ?? "")) return;
-  if (info.menuItemId === "nyx-fill") fillShortcut();
+  if (info.menuItemId === "nyx-fill") fillShortcut(info.frameId !== undefined ? { frameId: info.frameId, frameUrl: info.frameUrl ?? tab.url } : undefined);
   if (info.menuItemId === "nyx-generate") {
     const answer = await request({ r: "generate" });
     if (answer.password) inFrame(tab.id, info.frameId ?? 0, fillNew, [originOf(info.frameUrl ?? tab.url), answer.password]);

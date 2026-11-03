@@ -1,5 +1,5 @@
 // Pictures of the extension's pages for looking at the design: the popup, the menu under
-// a field, the save bar and the passkey window, with made-up items, in Passwords' theme.
+// a field, the save bar and the passkey card, with made-up items, in Passwords' theme.
 // The pages are served as plain local pages with a stand-in for the browser's API, and
 // photographed in a headless Firefox (no window is shown).
 //
@@ -68,7 +68,11 @@ const answers = {
     ] : [],
   }),
   "bar.state": () => ({ question: params.get("q") ?? "new", host: "github.com", username: "ken@design-nexus.dev", provider: "google" }),
-  "confirm.state": () => ({ ask: params.get("ask") ?? "get", host: "github.com", rpId: "github.com", user: "ken", choices: [{ id: "gh", name: "GitHub", user_name: "ken@design-nexus.dev" }, { id: "gh2", name: "GitHub (work)", user_name: "kparker-dn" }] }),
+  "passkey.state": () => ({
+    ask: params.get("ask") ?? "get", host: "github.com", rpId: "github.com", user: "ken", auto: params.has("auto"), inWindow: params.has("window"),
+    choices: [{ id: "gh", name: "GitHub", user_name: "ken@design-nexus.dev" }, { id: "gh2", name: "GitHub (work)", user_name: "kparker-dn" }].slice(0, params.has("auto") ? 1 : 2),
+  }),
+  "passkey.answer": () => new Promise(() => {}),
   pair: () => ({ state: "pending", code: "482913" }),
   unlock: () => ({ state: "shown" }),
 };
@@ -158,7 +162,11 @@ const shots = [
   ["7-popup-pairing", "/popup.html?view=state-unpaired", 760, 560],
   ["7b-popup-ssh-key", "/popup.html?view=ssh", 760, 560],
   ["8-page-menu-and-bar", "/page", 1000, 420],
-  ["9-passkey", "/confirm.html?ask=get#t", 420, 460],
+  ["9-passkey-card", "/passkey.html?ask=get#t", 380, 250],
+  ["9b-passkey-auto", "/passkey.html?ask=get&auto#t", 380, 180],
+  ["9c-passkey-create", "/passkey.html?ask=create#t", 380, 290],
+  ["9d-passkey-done", "/passkey.html?ask=done#t", 380, 110],
+  ["9e-passkey-window", "/passkey.html?ask=get&window#t", 420, 460],
   ["10-menu-codes", "/menu.html?field=otp#t", 360, 300],
 ];
 for (const [name, path, width, height] of shots) {
