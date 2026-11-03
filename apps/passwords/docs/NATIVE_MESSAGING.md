@@ -66,7 +66,8 @@ Pairing ties one browser profile to the daemon.
      pairings.
    - The extension stores `k` and the pairing id in `storage.local`.
    - Unconfirmed pairings expire after 2 minutes.
-5. **Revocation:** pairings can be revoked in the app and in Settings.
+5. **Revocation:** pairings can be revoked in the app's settings (Browsers). The Nyx
+   Settings page can't list or revoke them.
 
 ## Messages after pairing
 
@@ -77,8 +78,9 @@ Sealed requests are `{"r": "<request>", …}`; errors come back as `{"error": "<
 with the names in `nyx-passwords-proto`.
 
 - **Counters:** the extension uses the time in milliseconds (or one more than its
-  last). They must rise strictly per pairing and be within five minutes of the
-  daemon's clock, so a recorded frame can't be replayed, even after a restart.
+  last). Each is accepted once per pairing, within five minutes of the daemon's
+  clock, and above the oldest of the last 64 seen (requests sealed at once may
+  arrive out of order), so a recorded frame can't be replayed, even after a restart.
 - **Failures:** a frame that fails to decrypt is dropped, and three failures close the
   connection.
 
@@ -90,7 +92,7 @@ with the names in `nyx-passwords-proto`.
 | `match {url}` | `{items: [{id, name, username, host, favorite, has_totp, has_password, reprompt, sign_in_with, has_passkey}]}` | unlocked; only items whose URIs match `url` under their match rule (with the account's equivalent domains) |
 | `search {q}` | `{items: [{id, name, username, host, kind, sub, has_totp, favorite, reprompt}]}` | unlocked; names and usernames from across the vault (`sub`: a card's brand and last four digits, an identity's name), no secrets; up to 50 hits, or the first 1000 items (favorites first) for an empty query. The background script answers it for the popup only |
 | `item {id}` | the summary, plus `uris`, `has_password`, `has_passkey`, `editable`, `sign_in_with` | unlocked; popup only |
-| `icon {host}` | `{url}` (a `data:` URL) | unlocked, website icons on in the app, and `host` is a site the vault has an item for; through the server's icon service, kept in memory |
+| `icon {host}` | `{url}` (a `data:` URL) | unlocked, website icons on in the app, and `host` is a site the vault has an item for; through the server's icon service, kept in memory. Waits at most 250 ms (the fetch goes on, for next time); a failed fetch isn't retried for 10 minutes |
 | `fill {url, id, frame, confirmed, trigger}` | `{id, has_totp, username, password}` | unlocked; `id` is among `match(url)` (or, with `confirmed`, any login the user picked in the popup and confirmed for this page after a warning); `frame` has the same base domain as `url`. With `trigger: "load"` there's no `id`: see "Filling as the page loads" |
 | `totp {url, id, frame}` | `{code, period, period_left}` | as `fill` without `confirmed` |
 | `copy {id, field}` | `{seconds}` | unlocked; `username`, `password` or `totp` of any item, put on the clipboard by the daemon (cleared later). The value never comes back. Not for items that ask for the master password |

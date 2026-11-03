@@ -48,6 +48,8 @@ pub struct Settings {
     pub browser_passkeys: bool,
     /// What the username generator makes (tokens for alias services are in the keyring).
     pub username_rules: nyx_passwords_core::alias::UsernameRules,
+    /// Offer the SSH keys turned on for it on the agent socket. Off until turned on.
+    pub ssh_agent: bool,
 }
 
 impl Default for Settings {
@@ -71,6 +73,7 @@ impl Default for Settings {
             fill_on_load: true,
             browser_passkeys: false,
             username_rules: Default::default(),
+            ssh_agent: false,
         }
     }
 }

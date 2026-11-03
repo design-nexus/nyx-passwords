@@ -21,6 +21,11 @@ pub fn socket_path() -> Option<PathBuf> {
     Some(PathBuf::from(runtime).join("nyx-passwords").join("bus"))
 }
 
+/// The SSH agent's socket, for `SSH_AUTH_SOCK`.
+pub fn ssh_agent_socket_path() -> Option<PathBuf> {
+    socket_path().map(|p| p.with_file_name("ssh-agent.sock"))
+}
+
 /// The D-Bus address for `socket_path`.
 pub fn address() -> Option<String> {
     socket_path().map(|p| format!("unix:path={}", p.display()))
@@ -113,6 +118,12 @@ pub mod custom {
     pub const SIGN_IN_WITH: &str = "nyx:sign-in-with";
     /// True or false: this login isn't filled as its page loads.
     pub const NO_FILL_ON_LOAD: &str = "nyx:no-fill-on-load";
+    /// Text: the template the item is laid out with (`nyx-passwords-core::templates`).
+    pub const TEMPLATE: &str = "nyx:template";
+    /// Text, `<service>:<id>`: the email alias service and alias the login's username is.
+    pub const ALIAS: &str = "nyx:alias";
+    /// True or false: the item is left off this device while Travel Mode is on.
+    pub const TRAVEL: &str = "nyx:travel";
     /// Providers the extension recognizes: id and name.
     pub const PROVIDERS: &[(&str, &str)] = &[
         ("google", "Google"),

@@ -79,6 +79,44 @@
 - [x] Firefox add-on signing: 0.3.0 signed unlisted on AMO (`web-ext sign --channel unlisted`)
 - Live tests: `tests/edit.rs` `folders_fields_history_and_many_items` (with `bw`), `tests/live.rs` (hub, equivalent domains), `tests/daemon.rs` scopes and `live_sync`
 
+## Phase 7 — completion pass ([AUDIT.md](AUDIT.md), 2026-11-01)
+- [x] Audit: implementation matrix, security findings, roadmap; doc drift fixed (GLIMPSE_API.md, NATIVE_MESSAGING.md)
+- [x] CI: `cargo clippy -D warnings` and `cargo deny check` in `tools/ci.py`; fuzz lockfile off the advised tokio, ctutils and crypto-bigint
+- [x] Addresses: per-address match rules in the editor (`UriDraft`; `{uri, match}` in drafts, plain strings still accepted); a rule edited here or elsewhere survives the other's edits (`tests/edit.rs` `android_apps_and_match_rules`, with `bw`)
+- [x] Android app associations: `androidapp://<package>` rows with Android's package-name rule (`matching::android_package`), an Android apps section in the item view, fuzz seeds; [ANDROID.md](ANDROID.md)
+- [x] Templates: eleven built-in (`core/templates.rs`) and custom ones (Settings → Templates, `templates.toml`); `nyx:template` marker; picker on New item, labels and parts in the editor, grouped fields in the item view, a Templates sidebar group; `templates_round_trip_with_bw`
+- [x] Recent: last 20 items used (copied anywhere, filled, opened), kept encrypted with the user key beside the vault; `Recent`, `OpenedItem`; sidebar section; dropped on lock, removed on sign-out
+- [x] Email aliases: one interface over seven services with capabilities (`alias/providers.rs`); list, turn off or on, delete; `nyx:alias` links a login to its alias; Email aliases page and the alias in the item view; browser username requests limited to 5 a minute per pairing; stand-in tests for every service (`tests/alias.rs`)
+- [x] Cloudflare Email Routing adapter (an alias is a literal-address forwarding rule)
+- [x] Nyx Online Accounts: a Fastmail account there makes Fastmail the suggested alias service (`ListAccounts`, no secrets)
+- [x] Test copies' dialogs carry the test window class (`NYX_PASSWORDS_APP_ID` sets the program name)
+- [ ] Bitwarden Android association check on a device
+- [ ] Each alias service against a real account (only stand-ins so far)
+
+### Phase 7.2 — desktop integration
+- [x] Assistant: `passwords.generate` (onto the clipboard, never returned), `passwords.security_summary` (counts only, `SecuritySummary`), `passwords.open` (`nyx-passwords --item ID`); all `Secrets` in assistant-policy (key press every call); voice routes in `abilities/passwords`; daemon test
+- [x] Nyx Settings page: Browsers (fill on load, passkeys), Email aliases (the username generator's service and its settings; tokens stay in the window, never in a command line), Templates (names); buttons open the window at the right place
+- [x] Glimpse: `pw aliases` opens Email aliases; bare `pw` suggests from the recent list, which now includes items opened in the window
+- [ ] Bump Glimpse's `nyx-passwords-proto` pin once these commits are on GitHub (nothing Glimpse uses changed)
+
+### Phase 7.3 — advanced security
+- [x] Security report: `http://` addresses (not for home networks), duplicates (site and username), incomplete records (templates without addresses excepted), missing two-step login from 2fa.directory's list (downloaded whole, on request); verified vs advice; fixes from the item view (`editor::Fix`); live test `security_report_checks`
+- [x] Approval card (`nyx-passwords --approve`, `daemon/approvals.rs`): one queue for every request from another program; Deny first; a minute to answer; refused on lock
+- [x] SSH agent (`core/ssh_agent.rs`, `daemon/ssh_agent.rs`): list and sign only, per-key opt-in, approval once or until locked per program, RSA with SHA-2 only; fuzz target `ssh_agent`; daemon test with real `ssh-add` and `ssh-keygen -Y sign`/`check-novalidate`
+- [x] Travel Mode (`core/travel.rs`): `nyx:travel`; purge plus `VACUUM`; filtered from sync, sign-in and saved edits; off needs `VerifyPassword` and a sync; live test `travel_mode_keeps_marked_items_off_this_device` (no trace of the id in the file)
+- [x] Grants for other Nyx apps (`daemon/grants.rs`, `Scope::Requester`): `RequestAccess`, `AccessStatus`, `AppSearch`, `AppCopy`; grants and the activity log encrypted with the user key; Settings → App access with revoke and activity; daemon test with a stand-in `nyx-mail`
+- [x] Fixed: SSH key items vanished after a full sync (missing `Bitwarden-Client-Version`)
+- [x] Import saved Wi-Fi networks (`daemon/wifi.rs`): NetworkManager over the system bus; `WifiNetworks` lists names only, `ImportWifi` reads each password in the daemon and saves `wifi` template items; skips open, enterprise, agent-owned and already-saved networks; daemon test `wifi_import` against a stand-in NetworkManager on a private bus
+### Phase 7.4 — validation (the audit's step 6)
+- [x] Security review of Phases 2–5 and the fixes since ([REVIEW.md](REVIEW.md), 2026-11-02): approvals re-checked after the answer, a minute before an app refused may ask again, invisible characters dropped from the card, Wi-Fi import past a failure, a flaky generator test
+- [x] Regression: clippy, `cargo deny`, every test and live test (keyring tests aside)
+- [ ] Bitwarden Android on a device, with the app association check
+- [ ] The web vault: the same items by hand
+- [ ] The extension in Firefox (signed release), Zen, Chromium and Brave; the end-to-end test with `NYX_PW_TEST_FIREFOX`
+
+### Last
+- [ ] Biometrics and security-key unlock, on Nyx Biometrics (last)
+
 ## Phase 4 / 5
 See PLAN.md.
 - [x] Phase 5: threat-model review against the code ([REVIEW.md](REVIEW.md)); six fixes

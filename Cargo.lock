@@ -2325,7 +2325,7 @@ dependencies = [
 [[package]]
 name = "nyx-auth-core"
 version = "0.1.0"
-source = "git+https://github.com/design-nexus/nyx-biometrics.git?rev=4522ec7523431c8f5f5901280ee5f8caa1274084#4522ec7523431c8f5f5901280ee5f8caa1274084"
+source = "git+https://github.com/design-nexus/nyx-biometrics.git?rev=3565fe9b944d038a62ed29aa3c8a2300503f269a#3565fe9b944d038a62ed29aa3c8a2300503f269a"
 dependencies = [
  "serde",
  "thiserror",
@@ -2336,7 +2336,7 @@ dependencies = [
 [[package]]
 name = "nyx-auth-proto"
 version = "0.1.0"
-source = "git+https://github.com/design-nexus/nyx-biometrics.git?rev=4522ec7523431c8f5f5901280ee5f8caa1274084#4522ec7523431c8f5f5901280ee5f8caa1274084"
+source = "git+https://github.com/design-nexus/nyx-biometrics.git?rev=3565fe9b944d038a62ed29aa3c8a2300503f269a#3565fe9b944d038a62ed29aa3c8a2300503f269a"
 dependencies = [
  "nyx-auth-core",
  "serde",
@@ -2415,6 +2415,7 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2",
+ "signature",
  "ssh-key",
  "tempfile",
  "tokio",
@@ -2494,6 +2495,34 @@ version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2c9239b2dbc807adbbe147e8cf72ea7450c3a0aabe62cb8e75ff4ec22e1f72a"
 dependencies = [
+ "ecdsa",
+ "elliptic-curve",
+ "primefield",
+ "primeorder",
+ "sha2",
+]
+
+[[package]]
+name = "p384"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d17b851e6b3e378ab4ecb07fa2ed23f4d15f075735f8fec9fa1e7bdce5f8301f"
+dependencies = [
+ "ecdsa",
+ "elliptic-curve",
+ "fiat-crypto",
+ "primefield",
+ "primeorder",
+ "sha2",
+]
+
+[[package]]
+name = "p521"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ad64cc32c2dc466317c12ee5853e61f159f9eab1fe7efade0395dc2e7b43449"
+dependencies = [
+ "base16ct",
  "ecdsa",
  "elliptic-curve",
  "primefield",
@@ -3030,6 +3059,7 @@ dependencies = [
  "pkcs1",
  "pkcs8",
  "rand_core",
+ "sha2",
  "signature",
  "spki",
  "zeroize",
@@ -3536,6 +3566,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7b54d0ed0498daf3f78d82e00e28c8eec9d75a067c4cfbcc7a0f7d0f4077749e"
 dependencies = [
  "base64ct",
+ "crypto-bigint",
  "ctutils",
  "digest",
  "pem-rfc7468",
@@ -3551,7 +3582,11 @@ dependencies = [
  "bcrypt-pbkdf",
  "ctutils",
  "ed25519-dalek",
+ "p256",
+ "p384",
+ "p521",
  "rand_core",
+ "rsa",
  "sec1",
  "sha2",
  "signature",

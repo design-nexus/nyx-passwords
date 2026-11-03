@@ -21,6 +21,8 @@ pub enum SshError {
     Encrypted,
     WrongPassphrase,
     Unreadable,
+    /// A kind of key or signature the agent doesn't make (DSA, security-key keys, SHA-1).
+    Unsupported,
 }
 
 impl fmt::Display for SshError {
@@ -29,6 +31,7 @@ impl fmt::Display for SshError {
             Self::Encrypted => "this key has a passphrase",
             Self::WrongPassphrase => "that passphrase doesn't open this key",
             Self::Unreadable => "this isn't an OpenSSH private key",
+            Self::Unsupported => "this kind of key can't sign here",
         })
     }
 }
@@ -60,6 +63,52 @@ pub fn read_with_passphrase(private: &str, passphrase: &Secret) -> Result<SshKey
     }
     let opened = key.decrypt(passphrase.expose().as_bytes()).map_err(|_| SshError::WrongPassphrase)?;
     Ok(describe(&opened))
+}
+
+/// The agent's flags asking for an RSA signature with SHA-256 or SHA-512.
+pub const RSA_SHA2_256: u32 = 2;
+pub const RSA_SHA2_512: u32 = 4;
+
+/// A key item's public key in SSH's binary form, as the agent lists it and as sign
+/// requests name it.
+pub fn public_blob(private: &str) -> Result<Vec<u8>, SshError> {
+    let key = PrivateKey::from_openssh(private.trim()).map_err(|_| SshError::Unreadable)?;
+    key.public_key().to_bytes().map_err(|_| SshError::Unreadable)
+}
+
+/// A key item's stored public key (`ssh-ed25519 AAAA… comment`) in SSH's binary form.
+pub fn blob_from_public(public: &str) -> Result<Vec<u8>, SshError> {
+    let key = ssh_key::PublicKey::from_openssh(public.trim()).map_err(|_| SshError::Unreadable)?;
+    key.to_bytes().map_err(|_| SshError::Unreadable)
+}
+
+/// Signs `data` with a key item's private key, for the agent: the signature in SSH's
+/// binary form (algorithm name and signature). RSA keys sign with SHA-256 or SHA-512 as
+/// `flags` ask, never SHA-1.
+pub fn sign(private: &str, data: &[u8], flags: u32) -> Result<Vec<u8>, SshError> {
+    use signature::Signer;
+    use ssh_key::encoding::Encode;
+    use ssh_key::private::KeypairData;
+    let key = PrivateKey::from_openssh(private.trim()).map_err(|_| SshError::Unreadable)?;
+    if key.is_encrypted() {
+        return Err(SshError::Encrypted);
+    }
+    let signed = match key.key_data() {
+        KeypairData::Rsa(rsa) => {
+            let hash = if flags & RSA_SHA2_512 != 0 {
+                HashAlg::Sha512
+            } else if flags & RSA_SHA2_256 != 0 {
+                HashAlg::Sha256
+            } else {
+                return Err(SshError::Unsupported);
+            };
+            (rsa, Some(hash)).try_sign(data)
+        }
+        KeypairData::Ed25519(_) | KeypairData::Ecdsa(_) => key.key_data().try_sign(data),
+        _ => return Err(SshError::Unsupported),
+    }
+    .map_err(|_| SshError::Unsupported)?;
+    signed.encode_vec().map_err(|_| SshError::Unsupported)
 }
 
 fn describe(key: &PrivateKey) -> SshKey {

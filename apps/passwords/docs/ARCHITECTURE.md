@@ -78,6 +78,10 @@ change.
 | Access token | daemon memory | |
 | Device identifier | `vault.sqlite` | A random UUID, created once per install |
 | Preferences | `~/.config/nyx-passwords/settings.toml` | Written by the app (`prefs_store!`); the daemon reads it and reloads when its mtime changes |
+| Custom templates | `~/.config/nyx-passwords/templates.toml` | Names, kinds and field labels only; written by the app |
+| Recently used items | `vault.sqlite` (setting `recent`) | Up to 20 item ids, encrypted with the user key |
+| Email alias service tokens | Secret Service (`nyx-passwords-forwarder-<service>`) | Through `secret-tool` stdin |
+| Email aliases as last listed | daemon memory | Addresses and states, for the item view; dropped on lock |
 | Decrypted fields, search index, keys | daemon memory only | Zeroized on lock |
 | Site icons (opt-in, Phase 2) | `~/.cache/nyx-passwords/icons/` | PNGs from the server's icon service |
 
@@ -135,7 +139,45 @@ for both.
 - **Changing a password:** the old one moves into the item's password history (newest
   first, at most five) and `passwordRevisionDate` is set.
 - **Web addresses:** every one is saved with its encrypted checksum. An address that was
-  already on the item keeps its match rule.
+  already on the item keeps its match rule unless the draft sets one.
+
+**Web addresses and Android apps:** a draft's `uris` are plain strings (the address
+keeps the rule it had) or `{uri, match}` (the rule given; null is the default). An
+Android app is the address `androidapp://<package>`, as the Bitwarden apps write it;
+the daemon refuses one whose package name isn't valid. The window lists them apart from
+web addresses and saves web addresses first. Matching, Glimpse and the extension never
+treat them as web addresses.
+
+**Passwords' own custom fields** (`proto::custom`): ordinary text or true-or-false
+custom fields that the official clients show and keep. `nyx:sign-in-with` and
+`nyx:no-fill-on-load` are for the extension; `nyx:template` names the item's template;
+`nyx:alias` is `<service>:<id>`, the email alias its username is. The vault view reads
+the last two for the listing; the window never shows them as fields.
+
+**Templates** (`core/templates.rs`, `app/templates.rs`): a template is a kind of item
+and an ordered list of fields, each kept in one of the item's own fields (a login's
+username, password, code key, an address, the notes, or a card's or identity's field)
+or in a custom field named after its label. Built-in templates are in the core; the
+user's own are in `~/.config/nyx-passwords/templates.toml` (labels and types only). A
+template only lays out the editor and the item view: the item is a standard one, and
+without the marker it shows as its plain kind.
+
+**Recently used:** the daemon keeps the last 20 item ids used (copied by any peer,
+filled by a browser, opened in the window), encrypted with the user key in the store's
+settings, so the list survives a restart. It's read on unlock, dropped on lock and
+removed with everything else on sign-out.
+
+**Email aliases** (`core/alias/`, `daemon/aliases.rs`): one `Account` per service, with
+the user's token from the keyring. `Service::capabilities` says what each allows (make,
+list, turn off or on, delete, self-hosted); the window shows only what the service
+offers and names no service itself. The daemon keeps each service's last list in memory
+for the item view (its status for five minutes), dropped on lock. Nothing is asked of a
+service unless the user makes, lists, checks, turns off or deletes an alias.
+
+**Nyx Online Accounts** (`daemon/online_accounts.rs`): the daemon reads `ListAccounts`
+on the session bus (metadata only) to suggest Fastmail when an account is set up there.
+Online Accounts keeps Fastmail as an app password for mail, calendars and contacts, so
+masked email still needs a Fastmail API token of its own.
 
 **Unlock with the keyring** (opt-in): the daemon saves the user key in Secret Service
 (`application=nyx-passwords-unlock`, so a lookup for the session token can't find
@@ -207,13 +249,30 @@ clears any clipboard value this daemon still owns.
   timeout, browser pairing, Glimpse, notifications.
 - **Assistant:** the `passwords` ability (`apps/assistant/abilities/passwords`) runs
   `nyx-passwords-assistant`, an MCP server on stdio that is a daemon peer of its own
-  (`assistant` scope: status, search, copy). `passwords.find` returns metadata;
-  `passwords.copy` returns only that it copied. Both are `assistant-policy`'s `Secrets`
-  capability: always asked, by key press, one call at a time. The daemon refuses the peer
+  (`assistant` scope: status, search, copy, generate, security summary).
+  `passwords.find` returns metadata; `passwords.copy` and `passwords.generate` return
+  only that they copied; `passwords.security_summary` returns counts;
+  `passwords.open` starts the window with `--item <id>` (checked to be an id). All are
+  `assistant-policy`'s `Secrets` capability: always asked, by key press, one call at a
+  time. The daemon refuses the peer
   unless `assistant = true` (off by default). The ability is unconfined so it can reach
   the socket, which only the suite's own executables pass.
 - **Clipboard:** the daemon owns sensitive copies. Limits are in
   [SECURITY.md](SECURITY.md#clipboard).
+- **Approvals** (`daemon/approvals.rs`, `app/approve.rs`): requests from other programs
+  wait in one queue in the daemon, which starts `nyx-passwords --approve`; that opens
+  only the approval card (no main window), which polls `Approvals` and calls `Answer`.
+- **SSH agent** (`core/ssh_agent.rs` for the protocol, `core/ssh.rs` for signing,
+  `daemon/ssh_agent.rs` for the socket): `ssh-agent.sock` beside the bus socket, bound
+  at start; it lists and signs only while "SSH agent" is on and the vault is open.
+- **Travel Mode** (`core/travel.rs`): a flag in the store's `meta` table; the core's
+  sync, sign-in and edit paths drop `nyx:travel` items while it's on.
+- **Other Nyx apps** (`daemon/grants.rs`): `nyx-*` programs beside the daemon connect
+  as `Scope::Requester` and get only what a grant allows. Grants and the activity log
+  are store settings encrypted with the user key.
+- **Nyx Settings** (`nyx-passwords-settings`): also Browsers, SSH agent, Email aliases
+  (the username generator's settings, never tokens) and Templates (names); buttons open
+  the window where the rest is done.
 
 ## Processes and lifetime
 

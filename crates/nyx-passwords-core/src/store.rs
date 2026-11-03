@@ -134,6 +134,32 @@ impl Store {
         &self.path
     }
 
+    /// Whether Travel Mode is on: items marked for it are kept out of this copy.
+    pub fn travel(&self) -> Result<bool> {
+        let v: Option<String> = self
+            .db
+            .query_row("SELECT value FROM meta WHERE key = 'travel'", [], |r| r.get(0))
+            .optional()
+            .map_err(|_| StoreError::Read)?;
+        Ok(v.as_deref() == Some("on"))
+    }
+
+    pub fn set_travel(&self, on: bool) -> Result<()> {
+        self.db
+            .execute(
+                "INSERT INTO meta (key, value) VALUES ('travel', ?1) ON CONFLICT (key) DO UPDATE SET value = ?1",
+                [if on { "on" } else { "off" }],
+            )
+            .map(|_| ())
+            .map_err(|_| StoreError::Write)
+    }
+
+    /// Rewrites the file so removed rows leave no pages behind (with `secure_delete`
+    /// they're already overwritten in place). An SSD may still keep old blocks.
+    pub fn compact(&self) -> Result<()> {
+        self.db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;").map_err(|_| StoreError::Write)
+    }
+
     pub fn account(&self) -> Result<Option<Account>> {
         let json: Option<String> = self
             .db

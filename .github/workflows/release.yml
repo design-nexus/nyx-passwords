@@ -27,7 +27,7 @@ jobs:
         run: |
           source <(sed -n '/^app_info()/,/^}/p' install.sh)
           app_info passwords
-          bash tools/ci-bootstrap.sh $deps
+          bash tools/ci-bootstrap.sh $deps cargo-deny
       - run: python3 tools/ci.py
       - run: python3 tools/release.py --tag "$RELEASE_TAG" --publish
         env:

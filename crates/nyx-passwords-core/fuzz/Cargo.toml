@@ -60,3 +60,10 @@ path = "fuzz_targets/ssh.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "ssh_agent"
+path = "fuzz_targets/ssh_agent.rs"
+test = false
+doc = false
+bench = false

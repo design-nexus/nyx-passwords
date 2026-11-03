@@ -24,22 +24,27 @@ struct Scratch {
 
 impl Scratch {
     fn start(extra_settings: &str) -> Scratch {
-        Self::start_in(extra_settings, false)
+        Self::start_in(extra_settings, false, None)
+    }
+
+    /// With NetworkManager answering on `system_bus` (a stand-in's private bus).
+    fn start_with_system_bus(extra_settings: &str, system_bus: &str) -> Scratch {
+        Self::start_in(extra_settings, false, Some(system_bus))
     }
 
     /// With a keyring of its own: a private session bus with gnome-keyring on it, its
     /// files in the scratch home. Never the user's keyring.
     fn start_with_keyring(extra_settings: &str) -> Scratch {
-        Self::start_in(extra_settings, true)
+        Self::start_in(extra_settings, true, None)
     }
 
-    fn start_in(extra_settings: &str, keyring: bool) -> Scratch {
+    fn start_in(extra_settings: &str, keyring: bool, system_bus: Option<&str>) -> Scratch {
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::copy(env!("CARGO_BIN_EXE_nyx-passwordsd"), bin.join("nyx-passwordsd")).unwrap();
         let me = std::env::current_exe().unwrap();
-        for name in ["nyx-passwords", "nyx-glimpse", "stranger", "firefox"] {
+        for name in ["nyx-passwords", "nyx-glimpse", "nyx-mail", "stranger", "firefox"] {
             std::fs::copy(&me, bin.join(name)).unwrap();
         }
         std::fs::copy(env!("CARGO_BIN_EXE_nyx-passwords-bridge"), bin.join("nyx-passwords-bridge")).unwrap();
@@ -50,45 +55,28 @@ impl Scratch {
         for d in ["run", "data", "empty"] {
             std::fs::create_dir_all(dir.path().join(d)).unwrap();
         }
-        let daemon_path = bin.join("nyx-passwordsd");
-        let mut command = if keyring {
-            // `--login` makes and unlocks a "login" keyring from the password on stdin, so
-            // nothing ever asks to create one; then the daemon runs on that bus.
-            let script = format!(
-                "printf scratch | gnome-keyring-daemon --login >/dev/null && \
-                 gnome-keyring-daemon --start --components=secrets >/dev/null && exec '{}'",
-                daemon_path.display()
-            );
-            let mut c = Command::new("dbus-run-session");
-            c.args(["--", "sh", "-c", &script]).env("PATH", "/usr/bin");
-            c
-        } else {
-            let mut c = Command::new(&daemon_path);
-            c.env("PATH", dir.path().join("empty"));
-            c
-        };
-        let daemon = std::os::unix::process::CommandExt::process_group(
-            command
-                .env_remove("DBUS_SESSION_BUS_ADDRESS")
-                // No display either: a keyring prompt must never reach the user's screen.
-                .env_remove("WAYLAND_DISPLAY")
-                .env_remove("DISPLAY")
-                .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
-                .env("HOME", dir.path())
-                .env("XDG_RUNTIME_DIR", dir.path().join("run"))
-                .env("XDG_CONFIG_HOME", dir.path().join("config"))
-                .env("XDG_DATA_HOME", dir.path().join("data")),
-            0,
-        )
-        .spawn()
-        .unwrap();
+        let daemon = spawn_daemon(dir.path(), keyring, system_bus);
         let s = Scratch { dir, daemon };
+        s.wait_for_socket();
+        s
+    }
+
+    fn wait_for_socket(&self) {
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !s.socket().exists() {
+        while !self.socket().exists() {
             assert!(Instant::now() < deadline, "daemon didn't start");
             std::thread::sleep(Duration::from_millis(50));
         }
-        s
+    }
+
+    /// Stops the daemon and starts it again, as an update does.
+    fn restart(&mut self) {
+        // SAFETY: signalling our own child's process group.
+        unsafe { libc::kill(-(self.daemon.id() as i32), libc::SIGTERM) };
+        let _ = self.daemon.wait();
+        let _ = std::fs::remove_file(self.socket());
+        self.daemon = spawn_daemon(self.dir.path(), false, None);
+        self.wait_for_socket();
     }
 
     fn socket(&self) -> PathBuf {
@@ -108,6 +96,47 @@ impl Scratch {
             text.lines().find_map(|l| l.split_once("RESULTS ").map(|(_, r)| r)).unwrap_or_else(|| panic!("{role}: {text}"));
         serde_json::from_str(line).unwrap()
     }
+}
+
+/// The daemon, from the scratch `dir`'s copy, with nothing of the user's session.
+fn spawn_daemon(dir: &Path, keyring: bool, system_bus: Option<&str>) -> Child {
+    let daemon_path = dir.join("bin/nyx-passwordsd");
+    let mut command = if keyring {
+        // `--login` makes and unlocks a "login" keyring from the password on stdin, so
+        // nothing ever asks to create one; then the daemon runs on that bus.
+        let script = format!(
+            "printf scratch | gnome-keyring-daemon --login >/dev/null && \
+                 gnome-keyring-daemon --start --components=secrets >/dev/null && exec '{}'",
+            daemon_path.display()
+        );
+        let mut c = Command::new("dbus-run-session");
+        c.args(["--", "sh", "-c", &script]).env("PATH", "/usr/bin");
+        c
+    } else {
+        let mut c = Command::new(&daemon_path);
+        c.env("PATH", dir.join("empty"));
+        c
+    };
+    std::os::unix::process::CommandExt::process_group(
+        command
+            .env_remove("DBUS_SESSION_BUS_ADDRESS")
+            // No display either: a keyring prompt must never reach the user's screen.
+            .env_remove("WAYLAND_DISPLAY")
+            .env_remove("DISPLAY")
+            .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
+            .env("HOME", dir)
+            .env("XDG_RUNTIME_DIR", dir.join("run"))
+            .env("XDG_CONFIG_HOME", dir.join("config"))
+            .env("XDG_DATA_HOME", dir.join("data"))
+            // Never the real system bus: no test reads this computer's Wi-Fi networks.
+            .env(
+                "DBUS_SYSTEM_BUS_ADDRESS",
+                system_bus.map_or_else(|| format!("unix:path={}", dir.join("no-system-bus").display()), str::to_string),
+            ),
+        0,
+    )
+    .spawn()
+    .unwrap()
 }
 
 impl Scratch {
@@ -143,7 +172,10 @@ impl Scratch {
         assert_eq!(replies[0]["result"]["serverInfo"]["name"], "nyx-passwords");
         let tools: Vec<&str> =
             replies[1]["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(tools, ["passwords.find", "passwords.copy"]);
+        assert_eq!(
+            tools,
+            ["passwords.find", "passwords.copy", "passwords.generate", "passwords.security_summary", "passwords.open"]
+        );
         replies[2..].iter().map(|r| r["result"].clone()).collect()
     }
 }
@@ -189,17 +221,31 @@ async fn call_one(conn: &zbus::Connection, call: &[Value]) -> Value {
     let reply = match method {
         "Status" | "Lock" | "Sync" | "List" | "Generate" | "SignOut" | "Pairings" | "KeyringUnlock" | "UnlockWithKeyring"
         | "Revision" | "SignInRequests" | "PollDeviceSignIn" | "GeneratorHistory" | "EmergencyContacts" | "Outdated"
-        | "Restart" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &()).await,
-        "Search" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(s(1), call[2].as_u64().unwrap() as u32)).await,
-        "Copy" | "Reveal" | "UpdateLogin" | "MoveItems" | "RenameFolder" | "RequestDeviceSignIn" => {
+        | "Restart" | "Recent" | "AliasServices" | "SecuritySummary" | "Approvals" | "SshAgentKeys" | "Hygiene"
+        | "GenerateSshKey" | "TravelMode" | "AccessStatus" | "Grants" | "Activity" | "WifiNetworks" => {
+            conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &()).await
+        }
+        "Search" | "AppSearch" => {
+            conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(s(1), call[2].as_u64().unwrap() as u32)).await
+        }
+        "RequestAccess" => {
+            conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(s(1), s(2), call[3].as_u64().unwrap() as u32)).await
+        }
+        "Copy" | "Reveal" | "UpdateLogin" | "MoveItems" | "RenameFolder" | "RequestDeviceSignIn" | "AppCopy" => {
             conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(s(1), s(2))).await
         }
         "Unlock" | "CreateLogin" | "OpenUrl" | "Trash" | "Restore" | "VerifyPassword" | "ConfirmPairing" | "RemovePairing"
         | "Totp" | "GenerateUsername" | "CreateItem" | "CreateFolder" | "DeleteFolder" | "History" | "TrashItems"
-        | "RestoreItems" | "DeleteForever" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(s(1),)).await,
+        | "RestoreItems" | "DeleteForever" | "OpenedItem" | "ListAliases" | "ItemAlias" | "CreateAlias" | "RevokeGrant"
+        | "ImportWifi" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(s(1),)).await,
         "SignIn" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(s(1), s(2), s(3), 255u8, String::new())).await,
         "Attachments" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(s(1),)).await,
         "SetKeyringUnlock" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(call[1].as_bool().unwrap(),)).await,
+        "SetTravelMode" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(call[1].as_bool().unwrap(),)).await,
+        "SetSshAgentKey" => {
+            conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(s(1), call[2].as_bool().unwrap())).await
+        }
+        "Answer" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(call[1].as_u64().unwrap(), s(2))).await,
         "DeleteAttachment" => conn.call_method(None::<&str>, OBJECT, Some(IFACE), method, &(s(1), s(2))).await,
         // [method, id, name or attachment, path]: the file goes as a handle.
         // [method, format or password…, path]: the file goes as a handle.
@@ -453,6 +499,40 @@ async fn signed_in_vault() {
     assert_eq!(err(&app[0]), "Failed");
     assert_eq!(ok(&app[2]).as_array().unwrap().len(), 1);
 
+    // Glimpse's copy made it recently used; the list outlasts the lock (kept encrypted
+    // beside the vault) and is the app's alone.
+    let app = s.as_peer("nyx-passwords", json!([["Recent"], ["OpenedItem", "not-an-id"]]));
+    assert_eq!(ok(&app[0]).as_str().unwrap(), json!([id]).to_string());
+    assert_eq!(err(&app[1]), "NotFound");
+    let g = s.as_peer("nyx-glimpse", json!([["Recent"], ["OpenedItem", id]]));
+    assert_eq!((err(&g[0]), err(&g[1])), ("Denied", "Denied"));
+
+    // Email aliases: the services and what each can do; a login records its alias in
+    // `nyx:alias`, and its status is unknown until the service is asked. Only the app.
+    let linked = json!({"name": "Shop", "username": "x5@fastmail.example", "password": "canary-shop-Pw!9",
+                        "custom": [{"name": "nyx:alias", "value": "fastmail:m5", "kind": 0}]})
+    .to_string();
+    let app = s.as_peer("nyx-passwords", json!([["AliasServices"], ["CreateLogin", linked]]));
+    let services: Value = serde_json::from_str(ok(&app[0]).as_str().unwrap()).unwrap();
+    let find = |id: &str| services.as_array().unwrap().iter().find(|s| s["id"] == id).cloned().unwrap();
+    assert_eq!((find("fastmail")["toggle"].as_bool(), find("duckduckgo")["list"].as_bool()), (Some(true), Some(false)));
+    let shop = ok(&app[1]).as_str().unwrap().to_string();
+    let app = s.as_peer("nyx-passwords", json!([["ItemAlias", shop], ["ItemAlias", id], ["List"]]));
+    let alias: Value = serde_json::from_str(ok(&app[0]).as_str().unwrap()).unwrap();
+    assert_eq!(
+        alias,
+        json!({"service": "fastmail", "name": "Fastmail", "id": "m5", "email": "x5@fastmail.example", "enabled": null})
+    );
+    assert_eq!(ok(&app[1]), "null");
+    assert!(ok(&app[2]).as_str().unwrap().contains(r#""alias":"fastmail:m5""#));
+    let g = s.as_peer(
+        "nyx-glimpse",
+        json!([["AliasServices"], ["ListAliases", "fastmail"], ["ItemAlias", shop], ["CreateAlias", "https://shop.example"]]),
+    );
+    for reply in &g {
+        assert_eq!(err(reply), "Denied", "{reply}");
+    }
+
     // An item that asks for the master password again: Glimpse never gets its secrets,
     // the app only after confirming the password.
     let guarded = json!({"name": "Bank", "username": "me", "password": "canary-guarded-Pw!9", "reprompt": true}).to_string();
@@ -526,6 +606,48 @@ async fn signed_in_vault() {
     assert!(got[3]["content"][0]["text"].as_str().unwrap().contains("no login matches"));
     assert!(!Value::Array(got.clone()).to_string().contains("canary"));
 
+    // Generating copies (and here fails, with no compositor); the summary is counts only;
+    // opening needs one login.
+    let got = s.assistant(&[
+        ("passwords.generate", json!({})),
+        ("passwords.security_summary", json!({})),
+        ("passwords.open", json!({"query": "nothing like this"})),
+        ("passwords.open", json!({"id": "../../etc"})),
+    ]);
+    assert_eq!(got[0]["isError"], true);
+    let summary = &got[1]["structuredContent"];
+    assert!(summary["logins"].as_u64().unwrap() >= 2, "{summary}");
+    let keys: Vec<&str> = summary.as_object().unwrap().keys().map(String::as_str).collect();
+    assert_eq!(keys, ["flagged", "logins", "old", "reused", "weak"]);
+    assert!(got[2]["content"][0]["text"].as_str().unwrap().contains("no login matches"));
+    assert!(got[3]["content"][0]["text"].as_str().unwrap().contains("isn't a login's id"));
+    let g = s.as_peer("nyx-glimpse", json!([["SecuritySummary"]]));
+    assert_eq!(err(&g[0]), "Denied");
+
+    ssh_agent(&s, password);
+    app_access(&s, &id);
+
+    // Travel Mode: on at once; off only with the master password confirmed just before.
+    let marked = json!({"name": "Embassy", "username": "me", "password": "canary-travel-Pw!9",
+                        "custom": [{"name": "nyx:travel", "value": "true", "kind": 2}]})
+    .to_string();
+    let app =
+        s.as_peer("nyx-passwords", json!([["CreateLogin", marked], ["TravelMode"], ["SetTravelMode", true], ["TravelMode"]]));
+    let embassy = ok(&app[0]).as_str().unwrap().to_string();
+    assert_eq!(ok(&app[1]), r#"{"marked":1,"on":false}"#);
+    assert_eq!(ok(&app[2]), 1);
+    assert_eq!(ok(&app[3]), r#"{"marked":0,"on":true}"#);
+    let g = s.as_peer("nyx-glimpse", json!([["Search", "embassy", 5], ["SetTravelMode", false], ["TravelMode"]]));
+    assert_eq!(ok(&g[0]).as_array().unwrap().len(), 0, "gone from search too");
+    assert_eq!((err(&g[1]), err(&g[2])), ("Denied", "Denied"));
+    let app = s.as_peer(
+        "nyx-passwords",
+        json!([["SetTravelMode", false], ["VerifyPassword", password], ["SetTravelMode", false], ["Search", "embassy", 5]]),
+    );
+    assert_eq!(err(&app[0]), "Reprompt");
+    ok(&app[2]);
+    assert_eq!(ok(&app[3])[0][0], embassy.as_str(), "back after a sync");
+
     // Nothing decrypted reached the disk.
     for path in walk(s.dir.path()) {
         if !path.starts_with(s.dir.path().join("bin")) {
@@ -534,6 +656,257 @@ async fn signed_in_vault() {
             assert!(!text.contains("canary-daemon") && !text.contains("canary-guarded"), "{}", path.display());
         }
     }
+}
+
+/// The first approval waiting, once there is one.
+fn next_waiting(s: &Scratch) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let app = s.as_peer("nyx-passwords", json!([["Approvals"]]));
+        let list: Value = serde_json::from_str(ok(&app[0]).as_str().unwrap()).unwrap();
+        if let Some(first) = list.as_array().unwrap().first().cloned() {
+            return first;
+        }
+        assert!(Instant::now() < deadline, "nothing asked for approval");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Answers the next approval as the window would, once one is waiting.
+fn answer_next(s: &Scratch, answer: &str) -> Value {
+    let first = next_waiting(s);
+    let app = s.as_peer("nyx-passwords", json!([["Answer", first["id"], answer]]));
+    ok(&app[0]);
+    first
+}
+
+/// Another Nyx app: nothing until it asks and the user allows; then only what was
+/// granted, never a value back; revocable; logged without values.
+fn app_access(s: &Scratch, github: &str) {
+    let mail = s.as_peer(
+        "nyx-mail",
+        json!([
+            ["Search", "git", 5],
+            ["AppSearch", "git", 5],
+            ["AccessStatus"],
+            ["List"],
+            ["Reveal", github, "password"],
+            ["Grants"]
+        ]),
+    );
+    for (i, reply) in mail.iter().enumerate() {
+        if i == 2 {
+            assert_eq!(ok(reply), "null");
+        } else {
+            assert_eq!(err(reply), "Denied", "{i}: {reply}");
+        }
+    }
+    let bad = s.as_peer("nyx-mail", json!([["RequestAccess", "[\"reveal\"]", "", 60]]));
+    assert_eq!(err(&bad[0]), "Failed");
+
+    // Allowed for the time asked: search and copy without asking again.
+    let (got, asked) = std::thread::scope(|scope| {
+        let asking =
+            scope.spawn(|| s.as_peer("nyx-mail", json!([["RequestAccess", "[\"search\",\"copy\"]", "Fill in mail logins", 60]])));
+        let asked = answer_next(s, "session");
+        (asking.join().unwrap(), asked)
+    });
+    assert!(asked["title"].as_str().unwrap().contains("nyx-mail"));
+    assert!(
+        asked["detail"].as_str().unwrap().contains("Fill in mail logins")
+            && asked["detail"].as_str().unwrap().contains("an hour")
+    );
+    let granted: Value = serde_json::from_str(ok(&got[0]).as_str().unwrap()).unwrap();
+    assert_eq!((granted["granted"].as_bool(), granted["ask_each_copy"].as_bool()), (Some(true), Some(false)));
+    let mail = s.as_peer(
+        "nyx-mail",
+        json!([
+            ["AppSearch", "git", 5],
+            ["AppCopy", github, "password"],
+            ["Reveal", github, "password"],
+            ["Copy", github, "password"]
+        ]),
+    );
+    assert_eq!(ok(&mail[0])[0][0], github);
+    assert!(!mail[0].to_string().contains("canary"));
+    assert_eq!(err(&mail[1]), "Clipboard", "allowed; no compositor here to copy to");
+    assert_eq!((err(&mail[2]), err(&mail[3])), ("Denied", "Denied"), "only what was granted");
+
+    // Asking before each copy: a refusal is a refusal.
+    let app = s.as_peer("nyx-passwords", json!([["RevokeGrant", "nyx-mail"], ["Grants"]]));
+    assert_eq!(ok(&app[1]), "[]");
+    assert_eq!(err(&s.as_peer("nyx-mail", json!([["AppSearch", "git", 5]]))[0]), "Denied", "revoked at once");
+    std::thread::scope(|scope| {
+        let asking = scope.spawn(|| s.as_peer("nyx-mail", json!([["RequestAccess", "[\"copy\"]", "", 30]])));
+        answer_next(s, "once");
+        let got = asking.join().unwrap();
+        assert!(ok(&got[0]).as_str().unwrap().contains(r#""ask_each_copy":true"#));
+    });
+    std::thread::scope(|scope| {
+        let copying = scope.spawn(|| s.as_peer("nyx-mail", json!([["AppCopy", github, "password"]])));
+        let asked = answer_next(s, "deny");
+        assert!(asked["title"].as_str().unwrap().contains("copy a password"), "{asked}");
+        assert_eq!(err(&copying.join().unwrap()[0]), "Denied");
+    });
+    // Revoked while the card is up: allowing it then copies nothing.
+    std::thread::scope(|scope| {
+        let copying = scope.spawn(|| s.as_peer("nyx-mail", json!([["AppCopy", github, "password"]])));
+        let waiting = next_waiting(s);
+        let app = s.as_peer("nyx-passwords", json!([["RevokeGrant", "nyx-mail"], ["Answer", waiting["id"], "once"]]));
+        ok(&app[1]);
+        assert_eq!(err(&copying.join().unwrap()[0]), "Denied");
+    });
+    // Refused: the card shows the app's words without invisible characters, and the app
+    // can't ask again at once.
+    std::thread::scope(|scope| {
+        let asking =
+            scope.spawn(|| s.as_peer("nyx-mail", json!([["RequestAccess", "[\"search\"]", "Mail \u{202e}nigol\u{202c}", 60]])));
+        let asked = answer_next(s, "deny");
+        assert!(asked["detail"].as_str().unwrap().contains("Mail nigol"), "{asked}");
+        assert!(ok(&asking.join().unwrap()[0]).as_str().unwrap().contains(r#""granted":false"#));
+    });
+    assert_eq!(err(&s.as_peer("nyx-mail", json!([["RequestAccess", "[\"search\"]", "", 60]]))[0]), "RateLimited");
+
+    // The activity log: who, what, which item, the outcome; no values, no names.
+    let app = s.as_peer("nyx-passwords", json!([["Activity"]]));
+    let log = ok(&app[0]).as_str().unwrap().to_string();
+    assert!(log.contains("nyx-mail") && log.contains("copy password") && log.contains("denied") && log.contains(github));
+    assert!(!log.contains("canary") && !log.contains("GitHub"), "{log}");
+}
+
+/// One request to the SSH agent socket and its answer's body.
+fn agent_request(socket: &Path, body: &[u8]) -> Vec<u8> {
+    use std::io::{Read, Write};
+    let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(90))).unwrap();
+    stream.write_all(&(body.len() as u32).to_be_bytes()).unwrap();
+    stream.write_all(body).unwrap();
+    let mut len = [0u8; 4];
+    stream.read_exact(&mut len).unwrap();
+    let mut reply = vec![0u8; u32::from_be_bytes(len) as usize];
+    stream.read_exact(&mut reply).unwrap();
+    reply
+}
+
+fn sign_request(blob: &[u8]) -> Vec<u8> {
+    let mut body = vec![13u8];
+    body.extend((blob.len() as u32).to_be_bytes());
+    body.extend(blob);
+    body.extend(4u32.to_be_bytes());
+    body.extend_from_slice(b"data");
+    body.extend(0u32.to_be_bytes());
+    body
+}
+
+/// Signs on another thread while this one answers the approval as the window would.
+fn sign_answering(s: &Scratch, socket: &Path, blob: &[u8], answer: Option<&str>) -> Vec<u8> {
+    let (socket, request) = (socket.to_path_buf(), sign_request(blob));
+    let signing = std::thread::spawn(move || agent_request(&socket, &request));
+    if let Some(answer) = answer {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let waiting = loop {
+            let app = s.as_peer("nyx-passwords", json!([["Approvals"]]));
+            let list: Value = serde_json::from_str(ok(&app[0]).as_str().unwrap()).unwrap();
+            if let Some(first) = list.as_array().unwrap().first() {
+                break first.clone();
+            }
+            assert!(Instant::now() < deadline, "nothing asked for approval");
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        assert!(waiting["title"].as_str().unwrap().contains("Deploy key"), "{waiting}");
+        assert!(!waiting.to_string().contains("PRIVATE KEY"));
+        let g = s.as_peer("nyx-glimpse", json!([["Approvals"], ["Answer", waiting["id"], "once"]]));
+        assert_eq!((err(&g[0]), err(&g[1])), ("Denied", "Denied"), "only the window answers");
+        let app = s.as_peer("nyx-passwords", json!([["Answer", waiting["id"], answer]]));
+        ok(&app[0]);
+    }
+    signing.join().unwrap()
+}
+
+/// The SSH agent: nothing until it's turned on and the key is chosen; then each
+/// signature waits for the window's answer, once or until the vault locks.
+fn ssh_agent(s: &Scratch, password: &str) {
+    let socket = s.dir.path().join("run/nyx-passwords/ssh-agent.sock");
+    let app = s.as_peer("nyx-passwords", json!([["GenerateSshKey"]]));
+    let made: Value = serde_json::from_str(ok(&app[0]).as_str().unwrap()).unwrap();
+    let draft = json!({"kind": "ssh", "name": "Deploy key", "fields": {"ssh.privateKey": made["private"]}}).to_string();
+    let app = s.as_peer("nyx-passwords", json!([["CreateItem", draft]]));
+    let key = ok(&app[0]).as_str().unwrap().to_string();
+    let blob = nyx_passwords_core::ssh::blob_from_public(made["public"].as_str().unwrap()).unwrap();
+
+    // Off: no keys. On, but the key not chosen: still none.
+    assert_eq!(agent_request(&socket, &[11]), [12, 0, 0, 0, 0]);
+    let settings = s.dir.path().join("config/nyx-passwords/settings.toml");
+    let text = std::fs::read_to_string(&settings).unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    std::fs::write(&settings, format!("{text}ssh_agent = true\n")).unwrap();
+    assert_eq!(agent_request(&socket, &[11]), [12, 0, 0, 0, 0]);
+    let g = s.as_peer("nyx-glimpse", json!([["SetSshAgentKey", key, true]]));
+    assert_eq!(err(&g[0]), "Denied");
+    let app = s.as_peer("nyx-passwords", json!([["SetSshAgentKey", key, true], ["SshAgentKeys"]]));
+    assert_eq!(ok(&app[1]), &json!([key]).to_string());
+    let listed = agent_request(&socket, &[11]);
+    assert_eq!((listed[0], &listed[1..5]), (12, &1u32.to_be_bytes()[..]));
+    assert!(listed.windows(blob.len()).any(|w| w == blob.as_slice()) && listed.ends_with(b"Deploy key"));
+
+    // Allowed once: a signature (type 14). Denied: failure (5). Unknown key: failure.
+    assert_eq!(sign_answering(s, &socket, &blob, Some("once"))[0], 14);
+    assert_eq!(sign_answering(s, &socket, &blob, Some("deny")), [5]);
+    assert_eq!(sign_answering(s, &socket, b"not a key", None), [5]);
+    // Turned off while the card is up: no signature, whatever the answer.
+    let (sock, request) = (socket.clone(), sign_request(&blob));
+    let signing = std::thread::spawn(move || agent_request(&sock, &request));
+    let waiting = next_waiting(s);
+    let app = s.as_peer("nyx-passwords", json!([["SetSshAgentKey", key, false], ["Answer", waiting["id"], "once"]]));
+    ok(&app[1]);
+    assert_eq!(signing.join().unwrap(), [5]);
+    ok(&s.as_peer("nyx-passwords", json!([["SetSshAgentKey", key, true]]))[0]);
+    // Until locked: asked once, then not again.
+    assert_eq!(sign_answering(s, &socket, &blob, Some("session"))[0], 14);
+    assert_eq!(sign_answering(s, &socket, &blob, None)[0], 14);
+    // Adding keys and the rest of the protocol are refused.
+    assert_eq!(agent_request(&socket, &[17, 0, 0, 0, 0]), [5]);
+
+    // OpenSSH itself: ssh-add lists the key; ssh-keygen signs through the agent (after
+    // approval: it's another program) and the signature verifies.
+    let public = made["public"].as_str().unwrap();
+    let listed = Command::new("ssh-add").arg("-L").env("SSH_AUTH_SOCK", &socket).output().unwrap();
+    assert!(String::from_utf8_lossy(&listed.stdout).contains(public.split(' ').nth(1).unwrap()), "{listed:?}");
+    let work = s.dir.path().join("openssh");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(work.join("key.pub"), format!("{public}\n")).unwrap();
+    std::fs::write(work.join("data"), "signed by the agent\n").unwrap();
+    std::thread::scope(|scope| {
+        let signing = scope.spawn(|| {
+            Command::new("ssh-keygen")
+                .args(["-Y", "sign", "-n", "file", "-f"])
+                .arg(work.join("key.pub"))
+                .arg(work.join("data"))
+                .env("SSH_AUTH_SOCK", &socket)
+                .output()
+                .unwrap()
+        });
+        let asked = answer_next(s, "once");
+        assert!(asked["program"].as_str().unwrap().ends_with("ssh-keygen"), "{asked}");
+        let out = signing.join().unwrap();
+        assert!(out.status.success(), "{out:?}");
+    });
+    let check = Command::new("ssh-keygen")
+        .args(["-Y", "check-novalidate", "-n", "file", "-s"])
+        .arg(work.join("data.sig"))
+        .stdin(std::fs::File::open(work.join("data")).unwrap())
+        .output()
+        .unwrap();
+    assert!(check.status.success(), "{check:?}");
+
+    // Locked: no keys, and what was allowed is gone.
+    let app = s.as_peer("nyx-passwords", json!([["Lock"]]));
+    ok(&app[0]);
+    assert_eq!(agent_request(&socket, &[11]), [12, 0, 0, 0, 0]);
+    let app = s.as_peer("nyx-passwords", json!([["Unlock", password]]));
+    ok(&app[0]);
+    let after = sign_answering(s, &socket, &blob, Some("deny"));
+    assert_eq!(after, [5], "asked again after the lock");
 }
 
 fn walk(dir: &Path) -> Vec<PathBuf> {
@@ -555,21 +928,26 @@ impl Scratch {
     /// Runs the `browser` role as a program called `firefox`, so the bridge it starts has a
     /// browser for a parent. `step` is "hello" or a JSON list of requests.
     fn as_browser(&self, step: &str) -> Vec<Value> {
-        let out = Command::new(self.dir.path().join("bin/firefox"))
-            .args(["--exact", "browser", "--ignored", "--nocapture", "--test-threads=1"])
+        browser_results(&self.browser(step).output().unwrap())
+    }
+
+    fn browser(&self, step: &str) -> Command {
+        let mut c = Command::new(self.dir.path().join("bin/firefox"));
+        c.args(["--exact", "browser", "--ignored", "--nocapture", "--test-threads=1"])
             .env("NYX_PW_BROWSER_STEP", step)
             .env("NYX_PW_BROWSER_STATE", self.dir.path().join("extension.json"))
             // The scratch session's daemon, never the real one.
             .env("XDG_RUNTIME_DIR", self.dir.path().join("run"))
             .env("XDG_CONFIG_HOME", self.dir.path().join("config"))
-            .env("HOME", self.dir.path())
-            .output()
-            .unwrap();
-        let text = String::from_utf8_lossy(&out.stdout);
-        let line =
-            text.lines().find_map(|l| l.split_once("RESULTS ").map(|(_, r)| r)).unwrap_or_else(|| panic!("browser: {text}"));
-        serde_json::from_str(line).unwrap()
+            .env("HOME", self.dir.path());
+        c
     }
+}
+
+fn browser_results(out: &std::process::Output) -> Vec<Value> {
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = text.lines().find_map(|l| l.split_once("RESULTS ").map(|(_, r)| r)).unwrap_or_else(|| panic!("browser: {text}"));
+    serde_json::from_str(line).unwrap()
 }
 
 fn b64(bytes: &[u8]) -> String {
@@ -612,7 +990,21 @@ fn browser() {
         serde_json::from_slice(&reply).unwrap()
     };
     let mut results = Vec::new();
-    if step == "hello" {
+    if step == "update" {
+        // A request, then (once the test has replaced the bridge's binary and restarted
+        // the daemon, as an install does) another, and which binary the bridge runs.
+        let hello = json!({"t": "hello", "v": 1, "pub": b64(&[9u8; 32])});
+        results.push(send(&hello));
+        std::fs::write(Path::new(&state_file).with_extension("ready"), "").unwrap();
+        let updated = Path::new(&state_file).with_extension("updated");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !updated.exists() {
+            assert!(Instant::now() < deadline, "no update");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        results.push(send(&hello));
+        results.push(json!(std::fs::read_link(format!("/proc/{}/exe", child.id())).unwrap()));
+    } else if step == "hello" {
         let secret = x25519_dalek::StaticSecret::random();
         let public = x25519_dalek::PublicKey::from(&secret);
         let reply = send(&json!({"t": "hello", "v": 1, "pub": b64(public.as_bytes())}));
@@ -645,8 +1037,15 @@ fn browser() {
             let frame = if request["replay"] == true {
                 last.clone().unwrap()
             } else {
-                counter += 1;
-                let n = if request["stale"] == true { counter - 10 * 60 * 1000 } else { counter };
+                // Steps of two, so `behind` has an unused counter below the last one.
+                counter += 2;
+                let n = if request["stale"] == true {
+                    counter - 10 * 60 * 1000
+                } else if request["behind"] == true {
+                    counter - 3
+                } else {
+                    counter
+                };
                 let mut nonce = [0u8; 12];
                 rand::Rng::fill_bytes(&mut rand::rng(), &mut nonce);
                 let aad = format!("{id}|{n}");
@@ -675,6 +1074,29 @@ fn browser() {
     drop(input);
     let _ = child.wait();
     println!("RESULTS {}", Value::Array(results));
+}
+
+/// An install replaces the bridge while the browser keeps it running, and restarts the
+/// daemon, which refuses a replaced binary: the bridge carries on as the new build,
+/// without the browser noticing.
+#[test]
+fn bridge_carries_on_after_an_update() {
+    let mut s = Scratch::start("");
+    let browser = s.browser("update").stdout(std::process::Stdio::piped()).spawn().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !s.dir.path().join("extension.ready").exists() {
+        assert!(Instant::now() < deadline, "the browser didn't start");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let bridge = s.dir.path().join("bin/nyx-passwords-bridge");
+    std::fs::copy(env!("CARGO_BIN_EXE_nyx-passwords-bridge"), bridge.with_extension("new")).unwrap();
+    std::fs::rename(bridge.with_extension("new"), &bridge).unwrap();
+    s.restart();
+    std::fs::write(s.dir.path().join("extension.updated"), "").unwrap();
+    let results = browser_results(&browser.wait_with_output().unwrap());
+    assert_ne!(results[0]["t"], "unavailable", "{results:?}");
+    assert_eq!(results[1]["t"], results[0]["t"], "{results:?}");
+    assert_eq!(results[2], json!(bridge));
 }
 
 #[test]
@@ -747,6 +1169,7 @@ async fn paired_browser() {
         {"replay": true},
         {"r": "status", "stale": true},
         {"r": "context", "url": page},
+        {"r": "status", "behind": true},
     ]);
     let r = s.as_browser(&requests.to_string());
     assert_eq!(r[0]["state"], "unlocked");
@@ -765,6 +1188,7 @@ async fn paired_browser() {
     assert_eq!(r[8]["items"], json!([]), "a lookalike domain");
     assert_eq!(r[9]["t"], "error", "a replayed frame");
     assert_eq!(r[10]["t"], "error", "a stale counter");
+    assert_eq!(r[12]["state"], "unlocked", "sealed before the one ahead of it");
     // Saving from the page: a new login, then a new password for the same username.
     let r = s.as_browser(
         &json!([
@@ -1159,4 +1583,202 @@ async fn firefox_extension() {
     let entries = listing["entries"].as_array().unwrap();
     assert!(entries.iter().any(|e| e["username"] == "new@example.com"), "{listing}");
     assert!(entries.iter().any(|e| e["username"] == "octo" && e["name"] == "127.0.0.1"), "the passkey's new login: {listing}");
+}
+
+/// A stand-in NetworkManager on a private bus of its own: a `dbus-daemon` whose config
+/// has no service directories, so nothing (no keyring) can be started on it.
+struct FakeNetworkManager {
+    _dir: tempfile::TempDir,
+    bus: Child,
+    address: String,
+}
+
+impl Drop for FakeNetworkManager {
+    fn drop(&mut self) {
+        let _ = self.bus.kill();
+        let _ = self.bus.wait();
+    }
+}
+
+type NmSettings = std::collections::HashMap<String, std::collections::HashMap<String, zbus::zvariant::OwnedValue>>;
+
+/// One saved connection: (type, name, uuid, ssid, hidden, key-mgmt, psk-flags, psk).
+type Saved = (&'static str, &'static str, &'static str, &'static str, bool, Option<&'static str>, u32, Option<&'static str>);
+
+const SAVED: &[Saved] = &[
+    ("802-11-wireless", "Home", "u1", "HomeNet", false, Some("wpa-psk"), 0, Some("canary-wifi-Pw!9")),
+    ("802-11-wireless", "Cafe", "u2", "CafeFree", false, None, 0, None),
+    ("802-11-wireless", "Office", "u3", "Corp", false, Some("wpa-eap"), 0, None),
+    ("802-11-wireless", "Agent", "u4", "AgentNet", false, Some("wpa-psk"), 1, None),
+    ("802-3-ethernet", "Wired", "u5", "", false, None, 0, None),
+    ("802-11-wireless", "Lab", "u6", "LabNet", true, Some("sae"), 0, Some("canary-lab-Pw!9")),
+    // NetworkManager refuses its password: the others are imported all the same.
+    ("802-11-wireless", "Broken", "u7", "BrokenNet", false, Some("wpa-psk"), 0, None),
+];
+
+struct NmSettingsObject;
+
+#[zbus::interface(name = "org.freedesktop.NetworkManager.Settings")]
+impl NmSettingsObject {
+    fn list_connections(&self) -> Vec<zbus::zvariant::OwnedObjectPath> {
+        (0..SAVED.len())
+            .map(|i| zbus::zvariant::OwnedObjectPath::try_from(format!("/org/freedesktop/NetworkManager/Settings/{i}")).unwrap())
+            .collect()
+    }
+}
+
+struct NmConnection(usize);
+
+fn owned(v: zbus::zvariant::Value<'static>) -> zbus::zvariant::OwnedValue {
+    zbus::zvariant::OwnedValue::try_from(v).unwrap()
+}
+
+#[zbus::interface(name = "org.freedesktop.NetworkManager.Settings.Connection")]
+impl NmConnection {
+    fn get_settings(&self) -> NmSettings {
+        use zbus::zvariant::Value;
+        let (kind, name, uuid, ssid, hidden, key_mgmt, flags, _) = SAVED[self.0];
+        let mut s = NmSettings::new();
+        s.insert(
+            "connection".into(),
+            [("type", owned(Value::from(kind))), ("id", owned(Value::from(name))), ("uuid", owned(Value::from(uuid)))]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
+        );
+        s.insert(
+            "802-11-wireless".into(),
+            [("ssid", owned(Value::from(ssid.as_bytes().to_vec()))), ("hidden", owned(Value::from(hidden)))]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
+        );
+        if let Some(m) = key_mgmt {
+            s.insert(
+                "802-11-wireless-security".into(),
+                [("key-mgmt", owned(Value::from(m))), ("psk-flags", owned(Value::from(flags)))]
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v))
+                    .collect(),
+            );
+        }
+        s
+    }
+
+    fn get_secrets(&self, setting: &str) -> zbus::fdo::Result<NmSettings> {
+        let Some(psk) = SAVED[self.0].7.filter(|_| setting == "802-11-wireless-security") else {
+            return Err(zbus::fdo::Error::Failed("no secrets".into()));
+        };
+        let mut s = NmSettings::new();
+        s.insert(setting.into(), [("psk".to_string(), owned(zbus::zvariant::Value::from(psk)))].into_iter().collect());
+        Ok(s)
+    }
+}
+
+fn fake_network_manager() -> FakeNetworkManager {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("system_bus_socket");
+    let config = dir.path().join("bus.conf");
+    std::fs::write(
+        &config,
+        format!(
+            r#"<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>custom</type>
+  <listen>unix:path={}</listen>
+  <auth>EXTERNAL</auth>
+  <policy context="default">
+    <allow user="*"/>
+    <allow own="*"/>
+    <allow send_destination="*"/>
+    <allow receive_sender="*"/>
+  </policy>
+</busconfig>"#,
+            socket.display()
+        ),
+    )
+    .unwrap();
+    let bus = Command::new("dbus-daemon")
+        .arg(format!("--config-file={}", config.display()))
+        .arg("--nofork")
+        .env_clear()
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !socket.exists() {
+        assert!(Instant::now() < deadline, "the stand-in bus didn't start");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let address = format!("unix:path={}", socket.display());
+    let serve = address.clone();
+    let (ready, started) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async move {
+            let mut builder = zbus::connection::Builder::address(serve.as_str())
+                .unwrap()
+                .name("org.freedesktop.NetworkManager")
+                .unwrap()
+                .serve_at("/org/freedesktop/NetworkManager/Settings", NmSettingsObject)
+                .unwrap();
+            for i in 0..SAVED.len() {
+                builder = builder.serve_at(format!("/org/freedesktop/NetworkManager/Settings/{i}"), NmConnection(i)).unwrap();
+            }
+            let _conn = builder.build().await.unwrap();
+            ready.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+    });
+    started.recv_timeout(Duration::from_secs(10)).unwrap();
+    FakeNetworkManager { _dir: dir, bus, address }
+}
+
+/// Importing saved Wi-Fi networks: the window gets names only; the daemon reads each
+/// password from NetworkManager and saves Wi-Fi network items.
+#[tokio::test]
+#[ignore = "needs NYX_PW_TEST_SERVER"]
+async fn wifi_import() {
+    let (server, ca) = test_server().expect("NYX_PW_TEST_SERVER and NYX_PW_TEST_CA");
+    let email = format!("wifi-{}@example.com", &uuid::Uuid::new_v4().simple().to_string()[..10]);
+    let password = "correct horse wifi battery";
+    register(&server, &ca, &email, password).await;
+    let nm = fake_network_manager();
+    let s = Scratch::start_with_system_bus(&format!("extra_ca = {:?}\n", ca.display().to_string()), &nm.address);
+
+    let app = s.as_peer("nyx-passwords", json!([["SignIn", server, email, password], ["WifiNetworks"]]));
+    assert_eq!(ok(&app[0])[0], true);
+    let listed = ok(&app[1]).as_str().unwrap().to_string();
+    assert!(!listed.contains("canary"), "no passwords in the list");
+    let list: Value = serde_json::from_str(&listed).unwrap();
+    let by_name = |name: &str| list.as_array().unwrap().iter().find(|n| n["name"] == name).cloned().unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 6, "Wi-Fi only: {list}");
+    assert!(by_name("Home")["why_not"].is_null());
+    assert_eq!(by_name("Lab")["security"], "WPA3");
+    assert!(by_name("Cafe")["why_not"].as_str().unwrap().contains("no password"));
+    assert!(by_name("Office")["why_not"].as_str().unwrap().contains("enterprise"));
+    assert!(by_name("Agent")["why_not"].as_str().unwrap().contains("another program"));
+    let g = s.as_peer("nyx-glimpse", json!([["WifiNetworks"], ["ImportWifi", "[\"u1\"]"]]));
+    assert_eq!((err(&g[0]), err(&g[1])), ("Denied", "Denied"));
+
+    // Only importable ones are saved, whatever is asked for, and one that fails doesn't
+    // stop the rest; the second time, none.
+    let app = s.as_peer("nyx-passwords", json!([["ImportWifi", "[\"u7\",\"u1\",\"u2\",\"u3\",\"u4\",\"u5\",\"u6\"]"], ["List"]]));
+    let outcome: Value = serde_json::from_str(ok(&app[0]).as_str().unwrap()).unwrap();
+    assert_eq!(outcome["added"], 2, "{outcome}");
+    assert_eq!(outcome["failed"].as_array().unwrap().len(), 1, "{outcome}");
+    assert_eq!(outcome["failed"][0]["name"], "Broken");
+    let listing: Value = serde_json::from_str(ok(&app[1]).as_str().unwrap()).unwrap();
+    let home = listing["entries"].as_array().unwrap().iter().find(|e| e["name"] == "Home").cloned().unwrap();
+    assert_eq!((home["username"].as_str(), home["template"].as_str()), (Some("HomeNet"), Some("wifi")));
+    let id = home["id"].as_str().unwrap().to_string();
+    let app = s.as_peer(
+        "nyx-passwords",
+        json!([["Reveal", id, "password"], ["ImportWifi", "[\"u1\",\"u6\"]"], ["WifiNetworks"], ["Activity"]]),
+    );
+    assert_eq!(ok(&app[0]), "canary-wifi-Pw!9");
+    assert_eq!(serde_json::from_str::<Value>(ok(&app[1]).as_str().unwrap()).unwrap()["added"], 0, "already saved");
+    assert!(ok(&app[2]).as_str().unwrap().contains(r#""already_saved":true"#));
+    let log = ok(&app[3]).as_str().unwrap();
+    assert!(log.contains("imported Wi-Fi network") && !log.contains("canary"));
 }

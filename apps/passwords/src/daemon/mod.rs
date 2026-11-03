@@ -1,18 +1,24 @@
 //! `nyx-passwordsd`: holds the vault's keys and serves the app, Glimpse and the
 //! Settings page over a private socket (docs/ARCHITECTURE.md).
 
+mod aliases;
+mod approvals;
 mod browser;
 mod clipboard;
 mod extension;
 mod face_unlock;
 pub use extension::theme as extension_theme;
+mod grants;
 mod icons;
 mod notify;
+mod online_accounts;
 pub mod peer;
 mod service;
 pub mod settings;
+mod ssh_agent;
 mod vault;
 mod watch;
+mod wifi;
 
 use std::fs;
 use std::os::fd::AsRawFd;
@@ -112,6 +118,9 @@ async fn serve() -> i32 {
     let settings = settings::Watched::new(paths::prefs_file());
     let vault = Arc::new(Vault::new(store, settings, notify::Notifier::default()));
     watch::spawn_all(&vault);
+    // Bound always; it offers keys only while "SSH agent" is on and the vault is open.
+    let agent_socket = dir.join("ssh-agent.sock");
+    tokio::spawn(ssh_agent::serve(vault.clone(), agent_socket.clone()));
 
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
     let mut int = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).expect("SIGINT handler");
@@ -133,6 +142,7 @@ async fn serve() -> i32 {
     // Stopping locks: keys dropped, a copy still on the clipboard cleared.
     vault.lock().await;
     let _ = fs::remove_file(&socket);
+    let _ = fs::remove_file(&agent_socket);
     code
 }
 
@@ -140,7 +150,7 @@ async fn serve() -> i32 {
 /// before a single message is read.
 async fn connection(stream: tokio::net::UnixStream, vault: Arc<Vault>, allowed: PathBuf) {
     let Some(peer) = peer::identify(stream.as_raw_fd(), &allowed) else { return };
-    let service = Service { vault, scope: peer.scope, browser: peer.browser, pid: peer.pid };
+    let service = Service { vault, scope: peer.scope, app: peer.app, browser: peer.browser, pid: peer.pid };
     let built = async {
         zbus::connection::Builder::unix_stream(stream)
             .server(zbus::Guid::generate())?

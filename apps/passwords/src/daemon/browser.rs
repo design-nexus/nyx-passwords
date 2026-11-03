@@ -3,11 +3,11 @@
 //!
 //! The bridge relays frames and is trusted with nothing: every request after pairing
 //! is sealed with the pairing key (AES-256-GCM, the pairing id and a counter as
-//! associated data), and the counter must rise and stay within five minutes of now, so
+//! associated data), and each counter is accepted once, within five minutes of now, so
 //! a recorded request can't be replayed. Pairing keys are stored under the user key and
 //! loaded on unlock; while locked an extension only learns that.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
@@ -30,7 +30,14 @@ const MAX_FRAME: usize = 64 * 1024;
 const PENDING_FOR: Duration = Duration::from_secs(120);
 const MAX_PENDING: usize = 4;
 const CLOCK_SKEW_MS: u64 = 5 * 60 * 1000;
+/// Counters remembered per pairing: each is accepted once, and one may come a little
+/// after a later one (the extension seals several requests at once).
+const SEEN: usize = 64;
+/// How long an extension's icon request waits for a fetch.
+const ICON_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
 const FILLS_PER_MINUTE: usize = 30;
+/// Usernames a pairing may ask for in a minute: each may make a real alias at a service.
+const USERNAMES_PER_MINUTE: usize = 5;
 const MATCHES: usize = 20;
 
 #[derive(Default)]
@@ -52,8 +59,10 @@ struct Pending {
 struct Active {
     pairing: Pairing,
     key: PairKey,
-    last: u64,
+    /// The latest `SEEN` counters.
+    seen: BTreeSet<u64>,
     fills: VecDeque<Instant>,
+    usernames: VecDeque<Instant>,
 }
 
 /// The tab a paired extension last said was active, in which browser process. It holds
@@ -85,7 +94,10 @@ pub fn load(st: &mut State) {
     for p in pairings {
         let key = session.keys.item(None, None).and_then(|mut k| k.decrypt(&p.key)).and_then(|plain| PairKey::import(&plain));
         if let Ok(key) = key {
-            st.browser.active.insert(p.id.clone(), Active { pairing: p, key, last: 0, fills: VecDeque::new() });
+            st.browser.active.insert(
+                p.id.clone(),
+                Active { pairing: p, key, seen: BTreeSet::new(), fills: VecDeque::new(), usernames: VecDeque::new() },
+            );
         }
     }
 }
@@ -175,15 +187,21 @@ impl Vault {
                 let stored = st.store.pairings().ok().is_some_and(|all| all.iter().any(|x| x.id == p));
                 return json!({"t": if stored && st.session.is_none() { "locked" } else { "unknown" }});
             };
-            // A pairing belongs to one extension, and counters only go up, near the clock.
+            // A pairing belongs to one extension, and each counter is used once, near the
+            // clock; anything older than the counters remembered is refused.
             let now = now_ms();
-            if active.pairing.extension != extension || n <= active.last || n.abs_diff(now) > CLOCK_SKEW_MS {
+            let fresh =
+                !active.seen.contains(&n) && (active.seen.len() < SEEN || active.seen.first().is_some_and(|&low| n > low));
+            if active.pairing.extension != extension || !fresh || n.abs_diff(now) > CLOCK_SKEW_MS {
                 return json!({"t": "error", "error": "rejected"});
             }
             let Ok(plain) = active.key.open(format!("{p}|{n}").as_bytes(), &c) else {
                 return json!({"t": "error", "error": "rejected"});
             };
-            active.last = n;
+            active.seen.insert(n);
+            if active.seen.len() > SEEN {
+                active.seen.pop_first();
+            }
             serde_json::from_slice::<Value>(plain.expose()).unwrap_or(Value::Null)
         };
         let answer = self.answer(p, browser, &request).await;
@@ -210,6 +228,13 @@ impl Vault {
                 json!({})
             }
             "username" => {
+                {
+                    let mut st = self.state.lock().await;
+                    let Some(active) = st.browser.active.get_mut(pairing) else { return error(Code::Denied) };
+                    if !within(&mut active.usernames, USERNAMES_PER_MINUTE) {
+                        return error(Code::RateLimited);
+                    }
+                }
                 let site = request["url"].as_str().unwrap_or_default();
                 match self.generate_username(Scope::Browser, site).await {
                     Ok(made) => json!({"username": made.expose()}),
@@ -231,7 +256,9 @@ impl Vault {
                 return error(Code::NotFound);
             }
         }
-        match self.icon(Scope::App, &host).await {
+        // The extension's requests go one at a time: a slow fetch mustn't hold up the
+        // ones behind it. It goes on, and the icon is there next time.
+        match self.icon(Scope::App, &host, Some(ICON_WAIT)).await {
             Ok(bytes) => {
                 let kind = if bytes.starts_with(b"\x89PNG") {
                     "image/png"
@@ -331,7 +358,10 @@ impl Vault {
             created: now_ms() / 1000,
         };
         st.store.put_pairing(&pairing).map_err(|e| Failure::new(Code::Failed, e.to_string()))?;
-        st.browser.active.insert(pending.id, Active { pairing, key: pending.key, last: 0, fills: VecDeque::new() });
+        st.browser.active.insert(
+            pending.id,
+            Active { pairing, key: pending.key, seen: BTreeSet::new(), fills: VecDeque::new(), usernames: VecDeque::new() },
+        );
         Ok(())
     }
 
@@ -454,8 +484,7 @@ fn handle(st: &mut State, pairing: &str, browser: &(i32, String), request: &Valu
                     Err(_) => return error(Code::NoField),
                 }
             };
-            st.recent.retain(|r| *r != id);
-            st.recent.push_front(id);
+            super::vault::used(st, id);
             st.last_used = Instant::now();
             answer
         }
@@ -522,7 +551,7 @@ async fn save(st: &mut State, pairing: &str, request: &Value) -> Value {
                 username: entry.username.as_ref().map(|u| Secret::new(u.expose())),
                 password: Some(Secret::new(password)),
                 totp: get(Field::TotpSeed),
-                uris: entry.uris.iter().map(|u| Secret::new(u.expose())).collect(),
+                uris: entry.uris.iter().map(|u| Secret::new(u.expose()).into()).collect(),
                 notes: get(Field::Notes),
                 folder: entry.folder,
                 favorite: entry.favorite,
@@ -539,7 +568,7 @@ async fn save(st: &mut State, pairing: &str, request: &Value) -> Value {
                 username: (!username.is_empty()).then(|| Secret::new(username.as_str())),
                 password: Some(Secret::new(password)),
                 totp: None,
-                uris: vec![Secret::new(url.origin().ascii_serialization())],
+                uris: vec![Secret::new(url.origin().ascii_serialization()).into()],
                 notes: None,
                 folder: None,
                 favorite: false,

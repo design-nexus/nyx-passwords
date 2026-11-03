@@ -24,6 +24,12 @@ pub struct Entry {
     pub uri_rules: Vec<Option<i64>>,
     /// The first web address's host, lowercase, for icons and matching.
     pub host: Option<String>,
+    /// The template it's laid out with (its `nyx:template` custom field), if any.
+    pub template: Option<String>,
+    /// The email alias its username is (`nyx:alias`: `<service>:<id>`), if recorded.
+    pub alias: Option<String>,
+    /// Marked to stay off this device while Travel Mode is on (`nyx:travel`).
+    pub travel: bool,
     pub folder: Option<Uuid>,
     pub organization: Option<Uuid>,
     pub collections: Vec<Uuid>,
@@ -419,6 +425,9 @@ fn entry(keys: &Keys, c: &Cipher) -> Entry {
         uris: Vec::new(),
         uri_rules: Vec::new(),
         host: None,
+        template: None,
+        alias: None,
+        travel: false,
         folder: c.folder_id,
         organization: c.organization_id,
         collections: c.collection_ids.clone(),
@@ -452,6 +461,20 @@ fn entry(keys: &Keys, c: &Cipher) -> Entry {
         }
         e.host = e.uris.iter().find_map(|u| host_of(u.expose()));
     }
+    // Passwords' own text fields that say how to show the item; short, and not secret.
+    let mut own = |name: &str| {
+        c.fields
+            .iter()
+            .flatten()
+            .filter(|f| f.kind == 0)
+            .find(|f| key.decrypt_opt(f.name.as_deref()).ok().flatten().is_some_and(|n| n.expose() == name))
+            .and_then(|f| key.decrypt_opt(f.value.as_deref()).ok().flatten())
+            .map(|v| v.expose().trim().to_string())
+            .filter(|v| !v.is_empty() && v.len() <= 256)
+    };
+    e.template = own(nyx_passwords_proto::custom::TEMPLATE);
+    e.alias = own(nyx_passwords_proto::custom::ALIAS);
+    e.travel = crate::travel::marked(keys, c);
     e
 }
 

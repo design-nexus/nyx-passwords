@@ -194,3 +194,123 @@ fn preview(ui: &Ui, path: std::path::PathBuf, password: String) {
         }
     });
 }
+
+/// Import Wi-Fi networks: NetworkManager's saved networks, ticked where they can be
+/// imported, with the reason where they can't. The daemon reads each password from
+/// NetworkManager itself; the window only ever sees names.
+pub fn import_wifi(ui: &Ui) {
+    #[derive(serde::Deserialize)]
+    struct Network {
+        uuid: String,
+        name: String,
+        ssid: String,
+        security: String,
+        hidden: bool,
+        why_not: Option<String>,
+        already_saved: bool,
+    }
+    let ui = ui.clone();
+    glib::spawn_future_local(async move {
+        let list: Vec<Network> = match client::text("WifiNetworks", None).await {
+            Ok(json) => serde_json::from_str(&json).unwrap_or_default(),
+            Err(e) => return ui::toast(&ui, &e.to_string()),
+        };
+        let (dialog, card) = w::dialog("Import Wi-Fi networks", 520);
+        crate::dialog_dismissal::add(&dialog, &card, "Cancel");
+        dialog.set_transient_for(Some(&ui.window));
+        card.append(&label(
+            "Networks this computer has saved, from NetworkManager. Each becomes a Wi-Fi network item in your \
+             vault, so your phone and other devices have it too.",
+            "dim",
+        ));
+        let rows = w::vbox(0);
+        rows.add_css_class("group-list");
+        let mut checks: Vec<(String, gtk::CheckButton)> = Vec::new();
+        for n in &list {
+            let check = gtk::CheckButton::new();
+            check.set_valign(gtk::Align::Center);
+            let why = match (&n.why_not, n.already_saved) {
+                (Some(why), _) => Some(format!("Can't import: {why}")),
+                (None, true) => Some("Already in your vault".to_string()),
+                (None, false) => None,
+            };
+            check.set_active(why.is_none());
+            check.set_sensitive(why.is_none());
+            let mut desc = vec![n.security.clone()];
+            if n.ssid != n.name {
+                desc.push(format!("SSID {}", n.ssid));
+            }
+            if n.hidden {
+                desc.push("hidden".into());
+            }
+            desc.extend(why);
+            let row = w::row(&n.name, &glib::markup_escape_text(&desc.join(" · ")), Some(check.upcast_ref()));
+            if !check.is_sensitive() {
+                row.add_css_class("dim");
+            }
+            rows.append(&row);
+            checks.push((n.uuid.clone(), check));
+        }
+        if list.is_empty() {
+            card.append(&label("NetworkManager has no saved Wi-Fi networks.", "dim"));
+        } else {
+            let scroll = ui::scroll(&rows);
+            scroll.set_propagate_natural_height(true);
+            scroll.set_max_content_height(360);
+            card.append(&scroll);
+        }
+        let import = gtk::Button::with_label("Import");
+        import.add_css_class("suggested-action");
+        import.set_halign(gtk::Align::End);
+        import.set_sensitive(checks.iter().any(|(_, c)| c.is_active()));
+        card.append(&import);
+        let checks = Rc::new(checks);
+        for (_, c) in checks.iter() {
+            let (checks, import) = (checks.clone(), import.clone());
+            c.connect_toggled(move |_| import.set_sensitive(checks.iter().any(|(_, c)| c.is_active())));
+        }
+        let (d, u) = (dialog.clone(), ui.clone());
+        import.connect_clicked(move |b| {
+            let chosen: Vec<String> = checks.iter().filter(|(_, c)| c.is_active()).map(|(id, _)| id.clone()).collect();
+            let (d, u, b) = (d.clone(), u.clone(), b.clone());
+            b.set_sensitive(false);
+            glib::spawn_future_local(async move {
+                let uuids = serde_json::to_string(&chosen).unwrap_or_default();
+                match client::call("ImportWifi", Some((uuids.as_str(),).to_variant())).await {
+                    Ok(reply) => {
+                        #[derive(serde::Deserialize, Default)]
+                        struct Failed {
+                            name: String,
+                            why: String,
+                        }
+                        #[derive(serde::Deserialize, Default)]
+                        struct Outcome {
+                            added: u32,
+                            failed: Vec<Failed>,
+                        }
+                        let outcome: Outcome =
+                            reply.get::<(String,)>().and_then(|(json,)| serde_json::from_str(&json).ok()).unwrap_or_default();
+                        d.close();
+                        ui::reload(&u);
+                        let mut text = match outcome.added {
+                            1 => "Imported 1 Wi-Fi network.".to_string(),
+                            n => format!("Imported {n} Wi-Fi networks."),
+                        };
+                        if let Some(first) = outcome.failed.first() {
+                            text += &match outcome.failed.len() {
+                                1 => format!(" Couldn't import “{}”: {}.", first.name, first.why),
+                                n => format!(" Couldn't import {n}, among them “{}”: {}.", first.name, first.why),
+                            };
+                        }
+                        ui::toast(&u, &text);
+                    }
+                    Err(e) => {
+                        b.set_sensitive(true);
+                        ui::toast(&u, &e.to_string());
+                    }
+                }
+            });
+        });
+        dialog.present();
+    });
+}

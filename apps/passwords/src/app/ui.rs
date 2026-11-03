@@ -38,6 +38,10 @@ pub struct State {
     /// The daemon's state: logged_out, locked, unlocked; "" before the first answer.
     pub state: RefCell<String>,
     pub listing: RefCell<Listing>,
+    /// The recently used items' ids, newest first (the daemon's `Recent`).
+    pub recent: RefCell<Vec<String>>,
+    /// An item to show once the listing arrives (`--item`).
+    pending_item: RefCell<Option<String>>,
     pub section: RefCell<String>,
     pub selected: RefCell<Option<String>>,
     /// The items picked together (Ctrl- or Shift-click), when more than one is.
@@ -180,6 +184,9 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> Ui {
     vault.append(&panes);
     let list = gtk::ListBox::new();
     list.set_selection_mode(gtk::SelectionMode::Multiple);
+    // With single-click activation, a plain click adds its row to the selection instead
+    // of replacing it, and never unselects one; Ctrl and Shift only work without it.
+    list.set_activate_on_single_click(false);
     list.add_css_class("item-list");
     let list_scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
@@ -234,6 +241,8 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> Ui {
         update_bar,
         state: RefCell::new(String::new()),
         listing: RefCell::new(Listing::default()),
+        recent: RefCell::new(Vec::new()),
+        pending_item: RefCell::new(None),
         section: RefCell::new(start),
         selected: RefCell::new(None),
         multi: RefCell::new(Vec::new()),
@@ -293,6 +302,9 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> Ui {
         } else {
             *u.selected.borrow_mut() = picked.into_iter().next();
             u.multi.borrow_mut().clear();
+            if let Some(id) = u.selected.borrow().clone() {
+                opened(&u, id);
+            }
         }
         u.showing_detail.set(u.selected.borrow().is_some() || !u.multi.borrow().is_empty());
         detail::show(&u);
@@ -465,6 +477,7 @@ pub fn set_state(ui: &Ui, st: &str) {
     } else {
         // Nothing of the vault stays in the window once it's locked.
         *ui.listing.borrow_mut() = Listing::default();
+        ui.recent.borrow_mut().clear();
         super::icons::forget();
         *ui.security.borrow_mut() = security::Report::default();
         *ui.selected.borrow_mut() = None;
@@ -488,6 +501,42 @@ pub fn set_state(ui: &Ui, st: &str) {
     layout(ui);
 }
 
+/// Several items picked together in All items, as if Ctrl-clicked.
+pub fn show_several(ui: &Ui, ids: Vec<String>) {
+    navigate(ui, "all");
+    ui.search.set_text("");
+    *ui.selected.borrow_mut() = None;
+    *ui.multi.borrow_mut() = ids;
+    ui.showing_detail.set(true);
+    refresh_list(ui);
+    detail::show(ui);
+}
+
+/// Shows one item (`--item ID`, from the Assistant): all items, with it selected. While
+/// the vault is locked the selection waits for the unlock's listing.
+pub fn open_item(ui: &Ui, id: &str) {
+    if id.parse::<uuid::Uuid>().is_err() {
+        return;
+    }
+    navigate(ui, "all");
+    *ui.pending_item.borrow_mut() = Some(id.to_string());
+    if *ui.state.borrow() == state::UNLOCKED {
+        reload(ui);
+    }
+}
+
+/// An item was opened in the window: it goes first among the recently used.
+fn opened(ui: &Ui, id: String) {
+    let ui = ui.clone();
+    glib::spawn_future_local(async move {
+        if client::call("OpenedItem", Some((id.as_str(),).to_variant())).await.is_ok() {
+            let mut recent = ui.recent.borrow_mut();
+            recent.retain(|r| *r != id);
+            recent.insert(0, id);
+        }
+    });
+}
+
 /// Fetches the listing again and redraws.
 pub fn reload(ui: &Ui) {
     let ui = ui.clone();
@@ -497,6 +546,15 @@ pub fn reload(ui: &Ui) {
                 if let Ok(listing) = serde_json::from_str::<Listing>(&json) {
                     *ui.listing.borrow_mut() = listing;
                 }
+                let pending = ui.pending_item.borrow_mut().take();
+                if let Some(id) = pending.filter(|id| ui.listing.borrow().entries.iter().any(|e| e.id == *id)) {
+                    *ui.selected.borrow_mut() = Some(id);
+                    ui.multi.borrow_mut().clear();
+                    ui.showing_detail.set(true);
+                }
+                // A daemon from before Recent has no such method: the section stays empty.
+                let recent = client::text("Recent", None).await.ok();
+                *ui.recent.borrow_mut() = recent.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
                 refresh_list(&ui);
                 nav(&ui);
                 detail::show(&ui);
@@ -535,6 +593,10 @@ pub fn navigate(ui: &Ui, section: &str) {
         open_settings();
         return;
     }
+    if section == "aliases" {
+        super::aliases::open(ui);
+        return;
+    }
     *ui.section.borrow_mut() = section.to_string();
     *ui.selected.borrow_mut() = None;
     ui.multi.borrow_mut().clear();
@@ -551,6 +613,17 @@ pub fn visible(ui: &Ui) -> Vec<data::Entry> {
     let section = ui.section.borrow().clone();
     let query = ui.search.text().to_string();
     let report = ui.security.borrow();
+    if section == "recent" {
+        let listing = ui.listing.borrow();
+        return ui
+            .recent
+            .borrow()
+            .iter()
+            .filter_map(|id| listing.entries.iter().find(|e| e.id == *id && !e.deleted))
+            .filter(|e| e.matches(&query))
+            .cloned()
+            .collect();
+    }
     let shown = |e: &data::Entry| if section == "security" { report.flags(e) } else { e.in_section(&section) };
     ui.listing.borrow().entries.iter().filter(|e| shown(e) && e.matches(&query)).cloned().collect()
 }
@@ -620,7 +693,9 @@ pub fn refresh_list(ui: &Ui) {
         } else if *ui.section.borrow() == "trash" {
             "The trash is empty."
         } else if *ui.section.borrow() == "security" {
-            "No weak, reused or old passwords."
+            "Nothing to look at: no weak, reused or old passwords, and no records missing anything."
+        } else if *ui.section.borrow() == "recent" {
+            "Items you open or copy, here or in Glimpse and browsers, show up here."
         } else {
             "No items here yet."
         };
@@ -683,6 +758,12 @@ pub fn nav(ui: &Ui) {
         vec![
             ("all".into(), "All items".into(), "view-list-symbolic".into(), live(&|_| true)),
             ("favorites".into(), "Favorites".into(), "starred-symbolic".into(), live(&|e| e.favorite)),
+            (
+                "recent".into(),
+                "Recent".into(),
+                "document-open-recent-symbolic".into(),
+                ui.recent.borrow().iter().filter(|id| listing.entries.iter().any(|e| e.id == **id && !e.deleted)).count(),
+            ),
         ],
     )];
     let kinds: Vec<_> = data::KINDS
@@ -691,6 +772,17 @@ pub fn nav(ui: &Ui) {
         .filter(|(id, _, _, n)| *n > 0 || id == "login")
         .collect();
     groups.push(("Types", kinds));
+    let in_use: Vec<NavItem> = super::templates::all()
+        .into_iter()
+        .map(|t| {
+            let n = live(&|e| e.template.as_deref() == Some(t.id.as_str()));
+            (format!("template:{}", t.id), t.name, data::kind_icon(&t.kind).to_string(), n)
+        })
+        .filter(|(_, _, _, n)| *n > 0)
+        .collect();
+    if !in_use.is_empty() {
+        groups.push(("Templates", in_use));
+    }
     let mut folders: Vec<_> = listing
         .folders
         .iter()
@@ -725,11 +817,13 @@ pub fn nav(ui: &Ui) {
         groups.push(("Collections", cols));
     }
     let trashed = listing.entries.iter().filter(|e| e.deleted).count();
+    let aliased = live(&|e| e.alias.is_some());
     let flagged = listing.entries.iter().filter(|e| ui.security.borrow().flags(e)).count();
     groups.push((
         "Other",
         vec![
             ("security".into(), "Security".into(), "security-high-symbolic".into(), flagged),
+            ("aliases".into(), "Email aliases".into(), "mail-send-symbolic".into(), aliased),
             ("trash".into(), "Trash".into(), "user-trash-symbolic".into(), trashed),
         ],
     ));

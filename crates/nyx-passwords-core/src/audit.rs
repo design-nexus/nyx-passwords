@@ -149,9 +149,204 @@ pub async fn breaches(base: &str, hashes: &[(Uuid, Zeroizing<String>)]) -> Resul
     Ok(found)
 }
 
+/// Checks that need no password and no network: a login reached over plain `http://`,
+/// logins that look like the same account twice, and records missing what they're for.
+/// Heuristics, unlike a breach: they say "look at this", not "this was exposed".
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Hygiene {
+    pub id: Uuid,
+    /// One of its web addresses is `http://` to a public host.
+    pub insecure_address: bool,
+    /// Other logins for the same site and username.
+    pub duplicates: Vec<Uuid>,
+    /// What it lacks: `password`, `address`, `card number`.
+    pub incomplete: Vec<&'static str>,
+}
+
+pub fn hygiene(keys: &Keys, sync: &Sync, view: &crate::vault::View) -> Vec<Hygiene> {
+    let mut groups: HashMap<(String, String), Vec<Uuid>> = HashMap::new();
+    let mut rows: Vec<Hygiene> = Vec::new();
+    for e in view.entries.iter().filter(|e| !e.deleted && e.readable) {
+        let Some(c) = sync.ciphers.iter().find(|c| c.id == e.id) else { continue };
+        let mut row = Hygiene { id: e.id, ..Default::default() };
+        match e.kind {
+            Kind::Login => {
+                row.insecure_address = e.uris.iter().any(|u| insecure(u.expose()));
+                let passkeys = c.login.as_ref().and_then(|l| l.extra.get("fido2Credentials")).and_then(|v| v.as_array());
+                let signs_in_with = custom_field(keys, c, nyx_passwords_proto::custom::SIGN_IN_WITH).is_some();
+                if !e.has_password && passkeys.is_none_or(|p| p.is_empty()) && !signs_in_with && e.view_password {
+                    row.incomplete.push("password");
+                }
+                // A template without an address (a Wi-Fi network, an API key) isn't missing one.
+                let wants_address = match &e.template {
+                    None => true,
+                    Some(id) => crate::templates::builtin()
+                        .iter()
+                        .find(|t| t.id == *id)
+                        .is_some_and(|t| t.label_for(crate::templates::Slot::Uri).is_some()),
+                };
+                if wants_address && e.uris.iter().all(|u| u.expose().trim().is_empty()) {
+                    row.incomplete.push("address");
+                }
+                if let (Some(host), Some(user)) = (&e.host, &e.username) {
+                    let user = user.expose().trim().to_lowercase();
+                    if !user.is_empty() {
+                        groups.entry((crate::matching::base_domain(host), user)).or_default().push(e.id);
+                    }
+                }
+            }
+            Kind::Card => {
+                let number = c.card.as_ref().and_then(|v| v["number"].as_str()).filter(|n| !n.is_empty());
+                if number.is_none() {
+                    row.incomplete.push("card number");
+                }
+            }
+            _ => {}
+        }
+        rows.push(row);
+    }
+    for ids in groups.values().filter(|ids| ids.len() > 1) {
+        for row in rows.iter_mut().filter(|r| ids.contains(&r.id)) {
+            row.duplicates = ids.iter().copied().filter(|id| *id != row.id).collect();
+        }
+    }
+    rows.retain(|r| r.insecure_address || !r.duplicates.is_empty() || !r.incomplete.is_empty());
+    rows
+}
+
+/// A plain-`http` address to a host on the internet. Loopback, private networks and
+/// `.local`/`.lan` names (routers, printers) are left alone.
+fn insecure(uri: &str) -> bool {
+    let Ok(url) = url::Url::parse(uri.trim()) else { return false };
+    if url.scheme() != "http" {
+        return false;
+    }
+    match url.host() {
+        Some(url::Host::Ipv4(ip)) => !(ip.is_loopback() || ip.is_private() || ip.is_link_local()),
+        Some(url::Host::Ipv6(ip)) => !(ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local()),
+        Some(url::Host::Domain(d)) => {
+            let d = d.trim_end_matches('.').to_ascii_lowercase();
+            !(d == "localhost" || [".local", ".lan", ".home.arpa", ".internal", ".localhost"].iter().any(|s| d.ends_with(s)))
+        }
+        None => false,
+    }
+}
+
+fn custom_field(keys: &Keys, c: &Cipher, name: &str) -> Option<String> {
+    let mut key = keys.item(c.organization_id, c.key.as_deref()).ok()?;
+    let f = c
+        .fields
+        .iter()
+        .flatten()
+        .find(|f| key.decrypt_opt(f.name.as_deref()).ok().flatten().is_some_and(|n| n.expose() == name))?;
+    key.decrypt_opt(f.value.as_deref()).ok().flatten().map(|v| v.expose().to_string())
+}
+
+/// 2fa.directory's list of sites that offer one-time codes (TOTP). Downloaded whole, on
+/// request, so no site of the vault's is sent anywhere; matched here.
+pub const TWO_FACTOR_LIST: &str = "https://api.2fa.directory/v3/totp.json";
+/// The list is about 300 KB; anything far larger isn't it.
+const TWO_FACTOR_MAX: usize = 8 << 20;
+
+/// Sites that offer one-time codes, by domain, with their how-to page when it's https.
+#[derive(Debug, Default, Clone)]
+pub struct TwoFactorSites {
+    by_domain: HashMap<String, Option<String>>,
+}
+
+impl TwoFactorSites {
+    pub fn parse(json: &[u8]) -> Option<TwoFactorSites> {
+        let list: Vec<(String, serde_json::Value)> = serde_json::from_slice(json).ok()?;
+        let mut by_domain = HashMap::new();
+        for (_, site) in list {
+            let docs =
+                site["documentation"].as_str().filter(|u| u.starts_with("https://") && u.len() <= 2048).map(str::to_string);
+            let extra = site["additional-domains"].as_array().cloned().unwrap_or_default();
+            for domain in std::iter::once(&site["domain"]).chain(extra.iter()).filter_map(|d| d.as_str()) {
+                let domain = domain.trim().trim_end_matches('.').to_ascii_lowercase();
+                if !domain.is_empty() && domain.len() <= 253 {
+                    by_domain.entry(domain).or_insert_with(|| docs.clone());
+                }
+            }
+        }
+        (!by_domain.is_empty()).then_some(TwoFactorSites { by_domain })
+    }
+
+    pub async fn fetch(url: &str) -> Result<TwoFactorSites, String> {
+        let http = reqwest::Client::builder()
+            .user_agent("nyx-passwords")
+            .timeout(Duration::from_secs(30))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let unreachable = |_| "2fa.directory couldn't be reached".to_string();
+        let mut resp = http.get(url).send().await.map_err(unreachable)?.error_for_status().map_err(unreachable)?;
+        let mut raw = Vec::new();
+        while let Some(chunk) = resp.chunk().await.map_err(unreachable)? {
+            if raw.len() + chunk.len() > TWO_FACTOR_MAX {
+                return Err("2fa.directory's answer was too large".into());
+            }
+            raw.extend_from_slice(&chunk);
+        }
+        Self::parse(&raw).ok_or_else(|| "2fa.directory's answer wasn't understood".into())
+    }
+
+    /// The site's entry for a host: the host itself, or its base domain.
+    fn find(&self, host: &str) -> Option<&Option<String>> {
+        let host = host.trim_end_matches('.').to_ascii_lowercase();
+        self.by_domain.get(&host).or_else(|| self.by_domain.get(&crate::matching::base_domain(&host)))
+    }
+}
+
+/// Logins for sites that offer one-time codes but that have no one-time code key (or
+/// passkey) saved, with the site's how-to page if known.
+pub fn missing_two_factor(sync: &Sync, view: &crate::vault::View, sites: &TwoFactorSites) -> Vec<(Uuid, Option<String>)> {
+    view.entries
+        .iter()
+        .filter(|e| e.kind == Kind::Login && !e.deleted && e.readable && !e.has_totp)
+        .filter(|e| {
+            let c = sync.ciphers.iter().find(|c| c.id == e.id);
+            let passkeys = c.and_then(|c| c.login.as_ref()?.extra.get("fido2Credentials")?.as_array().map(|a| !a.is_empty()));
+            !passkeys.unwrap_or(false)
+        })
+        .filter_map(|e| {
+            let docs = e.uris.iter().filter_map(|u| crate::vault::host_of(u.expose())).find_map(|h| sites.find(&h).cloned())?;
+            Some((e.id, docs))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn insecure_addresses() {
+        assert!(insecure("http://shop.example.com/login"));
+        assert!(!insecure("https://shop.example.com/login"));
+        assert!(!insecure("http://192.168.1.1/admin"));
+        assert!(!insecure("http://10.0.0.5"));
+        assert!(!insecure("http://localhost:8080"));
+        assert!(!insecure("http://printer.local"));
+        assert!(!insecure("http://router.lan"));
+        assert!(insecure("http://203.0.113.9/"));
+        assert!(!insecure("androidapp://com.example"));
+        assert!(!insecure("example.com"), "no scheme means https");
+    }
+
+    #[test]
+    fn two_factor_list() {
+        let json = br#"[["GitHub", {"domain": "github.com", "additional-domains": ["github.dev"], "tfa": ["totp"],
+                         "documentation": "https://docs.github.com/2fa"}],
+                        ["Odd", {"domain": "odd.example", "documentation": "javascript:alert(1)"}]]"#;
+        let sites = TwoFactorSites::parse(json).unwrap();
+        assert_eq!(sites.find("github.com"), Some(&Some("https://docs.github.com/2fa".to_string())));
+        assert_eq!(sites.find("gist.github.com"), Some(&Some("https://docs.github.com/2fa".to_string())));
+        assert!(sites.find("GITHUB.DEV.").is_some());
+        assert_eq!(sites.find("odd.example"), Some(&None), "only https how-to pages");
+        assert_eq!(sites.find("gitlab.com"), None);
+        assert!(TwoFactorSites::parse(b"{}").is_none());
+        assert!(TwoFactorSites::parse(b"[]").is_none());
+    }
 
     #[test]
     fn dates() {

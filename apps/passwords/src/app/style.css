@@ -172,3 +172,12 @@ textview.editor-text text {
   background: transparent;
   color: @theme_text;
 }
+
+/* A template's custom field: its name is a label, not something to type into. */
+.editor-sheet entry.template-label,
+.editor-sheet entry.template-label:focus-within {
+  background: transparent;
+  box-shadow: none;
+  color: @theme_dim_text;
+  padding-left: 0;
+}

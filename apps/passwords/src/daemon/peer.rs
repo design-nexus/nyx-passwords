@@ -23,6 +23,9 @@ pub enum Scope {
     Browser,
     /// Nyx Assistant's Passwords ability: status, search and copy, when turned on.
     Assistant,
+    /// Another Nyx app (`nyx-*` next to the daemon): nothing but asking for access, and
+    /// then only what the user granted it (`grants.rs`).
+    Requester,
 }
 
 /// The executables allowed to connect, by file name, and their scopes.
@@ -50,6 +53,8 @@ const BROWSERS: &[(&str, &str)] = &[
 pub struct Peer {
     pub pid: i32,
     pub scope: Scope,
+    /// Its executable's file name (`nyx-mail`), which grants are made to.
+    pub app: String,
     /// For the bridge: the browser that started it (its pid and name).
     pub browser: Option<(i32, String)>,
 }
@@ -78,7 +83,8 @@ pub fn identify(fd: RawFd, allowed_dir: &Path) -> Option<Peer> {
     if pidfd_pid(&pidfd)? != before {
         return None;
     }
-    Some(Peer { pid: before, scope, browser })
+    let app = exe.file_name()?.to_str()?.to_string();
+    Some(Peer { pid: before, scope, app, browser })
 }
 
 /// The browser that is `pid`'s parent: its pid and name.
@@ -99,7 +105,16 @@ pub fn scope_of(exe: &Path, allowed_dir: &Path) -> Option<Scope> {
         return None;
     }
     let name = exe.file_name()?.to_str()?;
-    PEERS.iter().find(|(n, _)| *n == name).map(|(_, s)| *s)
+    if let Some((_, scope)) = PEERS.iter().find(|(n, _)| *n == name) {
+        return Some(*scope);
+    }
+    // Any other Nyx program installed beside the daemon may ask for access; its name
+    // is what the user sees and what a grant is for.
+    let requester = name.starts_with("nyx-")
+        && !name.starts_with("nyx-passwords")
+        && name.len() <= 64
+        && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    requester.then_some(Scope::Requester)
 }
 
 /// Where the suite's binaries are: the daemon's own directory (`~/.local/bin` when
@@ -146,6 +161,11 @@ mod tests {
         assert_eq!(scope_of(&dir.join("nyx-passwords-settings"), dir), Some(Scope::Settings));
         assert_eq!(scope_of(&dir.join("nyx-passwords-bridge"), dir), Some(Scope::Browser));
         assert_eq!(scope_of(&dir.join("nyx-passwordsd"), dir), None);
+        assert_eq!(scope_of(&dir.join("nyx-mail"), dir), Some(Scope::Requester));
+        assert_eq!(scope_of(&dir.join("nyx-passwords-other"), dir), None);
+        assert_eq!(scope_of(&dir.join("nyx-Mail"), dir), None);
+        assert_eq!(scope_of(Path::new("/tmp/nyx-mail"), dir), None);
+        assert_eq!(scope_of(&dir.join("python3"), dir), None);
         assert_eq!(scope_of(Path::new("/tmp/nyx-passwords"), dir), None);
         assert_eq!(scope_of(Path::new("/home/u/.local/bin/nyx-glimpse (deleted)"), dir), None);
         assert_eq!(scope_of(Path::new("/usr/bin/python3"), dir), None);

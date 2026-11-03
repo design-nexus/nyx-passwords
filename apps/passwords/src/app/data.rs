@@ -27,6 +27,18 @@ pub struct Entry {
     pub name: String,
     pub username: Option<String>,
     pub uris: Vec<String>,
+    /// Each address's match rule (`None`: the default), in the same order.
+    #[serde(default)]
+    pub uri_rules: Vec<Option<i64>>,
+    /// The template it's laid out with (`templates`), if any.
+    #[serde(default)]
+    pub template: Option<String>,
+    /// The email alias its username is (`<service>:<id>`), if recorded.
+    #[serde(default)]
+    pub alias: Option<String>,
+    /// Left off this device while Travel Mode is on.
+    #[serde(default)]
+    pub travel: bool,
     pub host: Option<String>,
     pub folder: Option<String>,
     pub organization: Option<String>,
@@ -111,6 +123,8 @@ impl Entry {
                     self.folder.as_deref() == Some(id)
                 } else if let Some(id) = s.strip_prefix("collection:") {
                     self.collections.iter().any(|c| c == id)
+                } else if let Some(id) = s.strip_prefix("template:") {
+                    self.template.as_deref() == Some(id)
                 } else {
                     self.kind == s
                 }
@@ -180,6 +194,10 @@ mod tests {
             name: "GitHub".into(),
             username: Some("octo".into()),
             uris: vec!["https://github.com/login".into()],
+            uri_rules: vec![None],
+            template: Some("wifi".into()),
+            alias: None,
+            travel: false,
             host: Some("github.com".into()),
             folder: Some("f".into()),
             organization: None,
@@ -200,10 +218,10 @@ mod tests {
     #[test]
     fn sections_and_search() {
         let e = entry();
-        for s in ["all", "favorites", "login", "folder:f"] {
+        for s in ["all", "favorites", "login", "folder:f", "template:wifi"] {
             assert!(e.in_section(s), "{s}");
         }
-        for s in ["trash", "note", "folder:g", "nofolder", "collection:c"] {
+        for s in ["trash", "note", "folder:g", "nofolder", "collection:c", "template:ssh"] {
             assert!(!e.in_section(s), "{s}");
         }
         let gone = Entry { deleted: true, ..entry() };

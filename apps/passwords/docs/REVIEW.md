@@ -4,6 +4,61 @@ Each review reads [SECURITY.md](SECURITY.md) and checks the code against it, rul
 rule, then looks at what changed since the last one. Findings are fixed in the same
 change, with a test where one can catch it.
 
+## 2026-11-02: validation, after the completion pass
+
+Covers what Phases 2 to 5 added and the fixes since: the SSH agent, the approval card,
+app access, Travel Mode, the Wi-Fi import, email aliases, the bridge starting again on
+a new build, and the extension's counters and icons.
+
+### The rules
+
+| Rule | Result |
+| --- | --- |
+| 1. No custom cryptography | Holds. Signing is `ssh-key`'s; grants, the activity log and the agent's key list are encrypted with the user key through `bitwarden-crypto`. |
+| 2. No plaintext on disk | Holds. Travel Mode removes marked rows and rewrites the file; the daemon tests' canary scan covers the agent, app access and the Wi-Fi import. |
+| 3. No secrets in logs and errors | Holds. The activity log has who, what, item ids and outcomes, never values or names. |
+| 4. No secrets in argv or environment | Holds. The bridge carries the frame in hand across a restart in its environment, but frames after pairing are sealed; the approval card gets no vault data. |
+| 5. No general retrieval API | Holds. Apps get names, usernames and sites, or a copy to the clipboard; the agent returns signatures; the Wi-Fi password goes from NetworkManager into the item inside the daemon. |
+| 6. No indexing of secrets | Holds. |
+| 7. Lock drops everything | Holds. Locking refuses every waiting approval and drops the agent's allowances, the icons and the 2fa.directory list. |
+| 8. Strict input | **Fixed.** Text from other programs shown on the approval card (an app's reason, an SSH client's command line) dropped control characters but kept invisible ones, such as right-to-left overrides, that can make the card say something else. Both now go through `approvals::plain`. |
+
+### Other findings
+
+- **Fixed: an approval could outlive what it approved.** A signature allowed on the
+  card went ahead even if the key had been turned off for the agent while the card was
+  up, and an app's copy even if its grant had been revoked. Both are checked again
+  after the answer. Tested by turning the key off, and revoking the grant, before
+  answering.
+- **Fixed: asking again at once.** An app refused access could ask again straight
+  away and keep the card in front of the user. It now waits a minute
+  (`RateLimited`).
+- **Fixed: a Wi-Fi network that failed stopped the import.** The ones already saved
+  stayed, but the window heard only the error. Each network now succeeds or fails on
+  its own (`{added, failed}`), tested with a network NetworkManager refuses.
+- **Fixed: a flaky test.** Four words in the EFF list have hyphens ("t-shirt"), so a
+  passphrase split on its default separator sometimes had six parts. The generator
+  was right (Bitwarden's draws from the same list); the test now uses another
+  separator.
+- **Trade-off, kept:** "Allow until locked" for an SSH key is per program path, so it
+  covers any process that runs that program (`/usr/bin/ssh`) until the vault locks,
+  as an agent without confirmation does for everything. Each use then shows a
+  notification and goes in the activity log.
+- **Trade-off, kept:** the agent lists the keys turned on for it, with their item
+  names, to any program of the user's without asking, as `ssh-agent` does; only
+  signing asks.
+
+### Regression (2026-11-02)
+
+Clippy and `cargo deny` clean; core, proto and app tests; every live test against the
+local Vaultwarden (core: 29, daemon: 7, keyring tests aside, which need a keyring of
+their own); the offline and conflict matrix.
+
+### Left open
+
+- Bitwarden Android on a device, the web vault, and the extension in Firefox, Zen,
+  Chromium and Brave need hands.
+
 ## 2026-10-20: after Phase 4
 
 Covers everything up to Phase 4: organizations, attachments, the security report and

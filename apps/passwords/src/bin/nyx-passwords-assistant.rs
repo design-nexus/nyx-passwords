@@ -1,10 +1,15 @@
 //! Nyx Assistant's Passwords ability: an MCP server on stdin/stdout (one JSON-RPC
-//! message per line) with two tools.
+//! message per line). No tool ever returns a password, code or other secret.
 //!
 //! - `passwords.find`: logins by name or site, as names, usernames and sites only.
 //! - `passwords.copy`: puts a login's username, password or one-time code on the
 //!   clipboard through the daemon. The value never comes back here, so the assistant
 //!   never sees it: the answer is only that it was copied.
+//! - `passwords.generate`: a new password from the generator settings, onto the
+//!   clipboard the same way.
+//! - `passwords.security_summary`: how many logins have weak, reused or old passwords;
+//!   counts only.
+//! - `passwords.open`: shows one login in the Passwords window.
 //!
 //! The daemon answers this program only when "Nyx Assistant" is turned on in Passwords'
 //! settings, and the assistant asks for a key press before each call
@@ -91,6 +96,37 @@ fn tools() -> Value {
                 "additionalProperties": false,
             },
         },
+        {
+            "name": "passwords.generate",
+            "description": "Generate a new password with the user's generator settings and copy it to the clipboard (it clears itself). The password is never returned.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"request": {"type": "string"}},
+                "additionalProperties": false,
+            },
+        },
+        {
+            "name": "passwords.security_summary",
+            "description": "How many logins in Nyx Passwords have weak, reused or year-old passwords. Counts only; no login is named.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"request": {"type": "string"}},
+                "additionalProperties": false,
+            },
+        },
+        {
+            "name": "passwords.open",
+            "description": "Show a login in the Nyx Passwords window. Give its id from passwords.find, or a query that matches exactly one login.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "query": {"type": "string", "minLength": 1, "maxLength": 256},
+                    "request": {"type": "string"},
+                },
+                "additionalProperties": false,
+            },
+        },
     ])
 }
 
@@ -107,6 +143,9 @@ async fn call(conn: &mut Option<zbus::Connection>, params: &Value) -> Value {
     let outcome = match params["name"].as_str().unwrap_or_default() {
         "passwords.find" => find(conn, args).await,
         "passwords.copy" => copy(conn, args).await,
+        "passwords.generate" => generate(conn).await,
+        "passwords.security_summary" => summary(conn).await,
+        "passwords.open" => open(conn, args).await,
         _ => Err("unknown tool".to_string()),
     };
     result(outcome)
@@ -130,24 +169,61 @@ async fn copy(conn: &mut Option<zbus::Connection>, args: &Value) -> Result<Value
         Some("code") => proto::field::TOTP,
         _ => return Err("field must be username, password or code".into()),
     };
-    let (id, name) = match (args["id"].as_str(), args["query"].as_str().map(str::trim).filter(|q| !q.is_empty())) {
-        (Some(id), _) => (id.to_string(), None),
-        (None, Some(query)) => {
-            let items = search(conn, query, 5).await?;
-            match items.as_slice() {
-                [] => return Err(format!("no login matches “{query}”")),
-                [one] => (one.0.clone(), Some(one.1.clone())),
-                many => {
-                    let names: Vec<String> = many.iter().map(|i| format!("{} ({})", i.1, i.2)).collect();
-                    return Err(format!("several logins match: {}; say which", names.join(", ")));
-                }
-            }
-        }
-        (None, None) => return Err("give the login's id or a query".into()),
-    };
+    let (id, name) = one_login(conn, args).await?;
     let reply = request(conn, "Copy", &(id.as_str(), field)).await?;
     let seconds: u32 = reply.body().deserialize().map_err(|_| "unexpected answer".to_string())?;
     Ok(json!({"copied": args["field"], "login": name, "clears_in_seconds": seconds}))
+}
+
+/// The login an `id` names, or the one a `query` matches; with its name when found by
+/// query.
+async fn one_login(conn: &mut Option<zbus::Connection>, args: &Value) -> Result<(String, Option<String>), String> {
+    match (args["id"].as_str(), args["query"].as_str().map(str::trim).filter(|q| !q.is_empty())) {
+        (Some(id), _) => Ok((id.to_string(), None)),
+        (None, Some(query)) => {
+            let items = search(conn, query, 5).await?;
+            match items.as_slice() {
+                [] => Err(format!("no login matches “{query}”")),
+                [one] => Ok((one.0.clone(), Some(one.1.clone()))),
+                many => {
+                    let names: Vec<String> = many.iter().map(|i| format!("{} ({})", i.1, i.2)).collect();
+                    Err(format!("several logins match: {}; say which", names.join(", ")))
+                }
+            }
+        }
+        (None, None) => Err("give the login's id or a query".into()),
+    }
+}
+
+async fn generate(conn: &mut Option<zbus::Connection>) -> Result<Value, String> {
+    let reply = request(conn, "Generate", &()).await?;
+    let seconds: u32 = reply.body().deserialize().map_err(|_| "unexpected answer".to_string())?;
+    Ok(json!({"copied": "a new password", "clears_in_seconds": seconds}))
+}
+
+async fn summary(conn: &mut Option<zbus::Connection>) -> Result<Value, String> {
+    let reply = request(conn, "SecuritySummary", &()).await?;
+    let text: String = reply.body().deserialize().map_err(|_| "unexpected answer".to_string())?;
+    serde_json::from_str(&text).map_err(|_| "unexpected answer".to_string())
+}
+
+/// Opens the Passwords window on the login: its id goes, checked to be one, as a single
+/// argument to the window next to this program, which shows it only if the vault has it.
+async fn open(conn: &mut Option<zbus::Connection>, args: &Value) -> Result<Value, String> {
+    let (id, name) = one_login(conn, args).await?;
+    if id.parse::<uuid::Uuid>().is_err() {
+        return Err("that isn't a login's id".into());
+    }
+    let window = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("nyx-passwords")));
+    let window = window.filter(|w| w.exists()).ok_or("the Passwords window isn't installed")?;
+    std::process::Command::new(window)
+        .args(["--item", id.as_str()])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|_| "couldn't open Passwords".to_string())?;
+    Ok(json!({"opened": name.unwrap_or_else(|| "the login".into())}))
 }
 
 async fn search(conn: &mut Option<zbus::Connection>, query: &str, limit: u32) -> Result<Vec<Item>, String> {

@@ -9,7 +9,9 @@ fn main() -> glib::ExitCode {
     nyx_core::app::init(nyx_passwords::daemon::APP);
     let args: Vec<_> = std::env::args().collect();
     if args.iter().any(|s| s == "--help" || s == "-h") {
-        println!("Usage: nyx-passwords [--unlock] [--section all|favorites|login|note|card|identity|trash|settings]");
+        println!(
+            "Usage: nyx-passwords [--unlock] [--section all|favorites|recent|login|note|card|identity|trash|settings] [--item ID]"
+        );
         return glib::ExitCode::SUCCESS;
     }
     if std::env::var_os("GSK_RENDERER").is_none() {
@@ -17,14 +19,28 @@ fn main() -> glib::ExitCode {
         unsafe { std::env::set_var("GSK_RENDERER", "ngl") };
     }
     // NYX_PASSWORDS_APP_ID runs a test copy beside the real one (its own window class).
+    // Dialogs are windows outside the application and take their class from the program
+    // name, so the test copy's carry its class too.
+    if let Ok(test) = std::env::var("NYX_PASSWORDS_APP_ID") {
+        glib::set_prgname(Some(test.as_str()));
+    }
     let id = std::env::var("NYX_PASSWORDS_APP_ID").unwrap_or_else(|_| "io.github.design_nexus.nyx.Passwords".into());
     let app = gtk::Application::builder().application_id(id).flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE).build();
     app.connect_command_line(|app, cl| {
         let argv: Vec<String> = cl.arguments().iter().map(|s| s.to_string_lossy().into_owned()).collect();
         let section = argv.iter().position(|s| s == "--section").and_then(|i| argv.get(i + 1)).cloned();
+        let item = argv.iter().position(|s| s == "--item").and_then(|i| argv.get(i + 1)).cloned();
+        // --approve (from the daemon): only the approval card, not the main window.
+        if argv.iter().any(|s| s == "--approve") {
+            app::approve::open(app);
+            return glib::ExitCode::SUCCESS;
+        }
         // --unlock (from Glimpse) just brings the window up: it opens on the unlock page
         // while the vault is locked.
-        app::ui::present(app, section.as_deref());
+        let ui = app::ui::present(app, section.as_deref());
+        if let Some(id) = item {
+            app::ui::open_item(&ui, &id);
+        }
         glib::ExitCode::SUCCESS
     });
     app.connect_shutdown(|_| app::prefs::flush());

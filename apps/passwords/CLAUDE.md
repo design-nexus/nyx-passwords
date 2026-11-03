@@ -30,4 +30,17 @@
   `XDG_DATA_HOME`, `WAYLAND_DISPLAY` as an absolute path), never the real vault. Debug
   builds sign in to the throwaway server and set up the view from `PASSWORDS_TEST_*`
   (`src/app/fixture.rs`). Use a short `XDG_RUNTIME_DIR` for scratch runs: socket
-  paths are limited to 108 bytes.
+  paths are limited to 108 bytes. Dialogs are windows of their own; the test copy gives
+  them its class too (`main.rs` sets the program name), so the window rule must match
+  that class. Still kill any window with the test copy's pid on another monitor.
+- Daemon tests copy several debug binaries per test: run them with
+  `TMPDIR=$PWD/target/tmp` when `/tmp` is a small tmpfs.
+- Never let a test or scratch daemon reach a keyring. Ken doesn't want keyrings created
+  or prompts shown. Run scratch daemons with `DBUS_SESSION_BUS_ADDRESS` unset and a
+  `PATH` without `secret-tool` (no `dbus-run-session`: it activates gnome-keyring, whose
+  prompter opens on the real screen). Never use `--include-ignored` on the core: its
+  keyring tests use the real Secret Service. Use `--ignored --skip keyring`. The daemon
+  test `keyring_unlock` makes a throwaway keyring in a scratch home: skip it too
+  (`--skip keyring`).
+- Docs for this pass: [docs/AUDIT.md](docs/AUDIT.md) (what's done, the roadmap),
+  [docs/ANDROID.md](docs/ANDROID.md).

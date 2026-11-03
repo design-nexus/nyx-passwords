@@ -59,9 +59,10 @@ against that. What Nyx Passwords does:
   what it can ask for:
   - Glimpse can search metadata and ask for copies, but can't read a secret back or
     reveal anything.
-  - The Assistant's helper can do the same and less (no suggestions, generating or
-    opening), only while its setting is on, and the assistant asks for a key press
-    before each call.
+  - The Assistant's helper can do about the same: search, copy and generate (onto the
+    clipboard, never back), plus the security report as counts only, and open a login
+    in the window; no suggestions or site addresses. Only while its setting is on, and
+    the assistant asks for a key press before each call.
   - Only the app can reveal a field.
 - Rate limits on copy and reveal, plus a notification for each copy, make silent bulk
   extraction visible.
@@ -84,12 +85,76 @@ against that. What Nyx Passwords does:
   Icons stay in daemon memory until the vault locks; none are written to disk.
 
 - **An email alias service** (SimpleLogin, addy.io, Firefox Relay, DuckDuckGo,
-  Fastmail, Forward Email): only when you generate a username with it. It gets your
-  API token and the site's name. The token stays in the desktop keyring.
+  Fastmail, Forward Email, Cloudflare Email Routing): only when you generate a username
+  with it, or list, check, turn off or delete its aliases. It gets your API token and,
+  for a new alias, the site's name. The token stays in the desktop keyring and never
+  leaves the daemon; the window gets addresses and states. Alias ids are checked before
+  they go into a request's path. A paired browser may ask for at most five usernames a
+  minute, since each may make a real alias.
+- **Nyx Online Accounts** (session bus): `ListAccounts`, which holds no secrets, when
+  the window lists the alias services, to suggest Fastmail.
+- **2fa.directory** (`api.2fa.directory/v3/totp.json`): only when you press "Check
+  two-step login" in the Security section and confirm. The whole public list is
+  downloaded (about 300 KB, at most 8 MB read) and matched here; nothing about the
+  vault is sent. It's kept in daemon memory until the vault locks.
+- **NetworkManager** (system bus): only when you press "Import…" for Wi-Fi networks
+  in Settings → Import and export. Listing reads the saved connections' settings,
+  which hold no passwords; the window gets names, SSIDs and security types. On
+  import the daemon asks NetworkManager for each chosen network's password
+  (`GetSecrets`, allowed by polkit for an admin user at the computer) and saves it
+  straight into a new item; it never reaches the window. Open and enterprise networks,
+  and networks whose password another program keeps, are skipped. At most 500
+  connections are read, with each value's length capped.
 
-The security report itself (weak, reused, old) is worked out in daemon memory. Its
-strength cache keeps only item ids, revisions and a weak/not-weak flag, and is
-dropped on lock.
+The security report itself (weak, reused, old; `http://` addresses, duplicates,
+incomplete records) is worked out in daemon memory. Its strength cache keeps only item
+ids, revisions and a weak/not-weak flag, and is dropped on lock. A breach is reported as
+verified; everything else is labelled advice.
+
+### Other programs using the vault
+
+All three follow one pattern: the program asks, the daemon opens the window's approval
+card (`nyx-passwords --approve`), and only the app's scope can see or answer what's
+waiting. Deny is focused first; Escape and closing the card deny. Unanswered requests
+are refused after a minute, at most four wait at once, and locking refuses them all.
+Each use goes into the activity log.
+
+- **SSH agent** (off by default; `$XDG_RUNTIME_DIR/nyx-passwords/ssh-agent.sock`, 0600 in
+  the 0700 directory, peers of another uid ignored):
+  - offers only SSH key items turned on for it (that list encrypted with the user key),
+    only while the vault is open, never keys that ask for the master password or that
+    an organization hides;
+  - each signature needs approval, once or until the vault locks, for that key and
+    that program (by its real path); a use allowed without asking still shows a
+    notification;
+  - private keys stay in the daemon; adding, removing and locking keys and every other
+    agent request are refused; RSA signs with SHA-2 only; requests are size-limited and
+    the parser is fuzzed;
+  - the card shows the program's command line as the kernel reports it: a process can
+    write its own command line, so the path (`Program:`) is the trustworthy part.
+- **Other Nyx apps** (`Scope::Requester`: a `nyx-*` program beside the daemon):
+  - nothing until the user grants it `search` (names, usernames, sites) and/or `copy`
+    (to the clipboard, never back), for at most a week, optionally asking before each
+    copy;
+  - grants are kept encrypted with the user key, so editing a file can't make one;
+    revoked in Settings → App access; 10 copies a minute per app; items that ask for
+    the master password are refused;
+  - the app's own words ("reason") are shown as its words, cut to 200 characters.
+- **Activity log:** who (program or app), what (copy, sign, request, revoke), the item's
+  id and the outcome, never a value or an item's name; the last 500 events, encrypted
+  with the user key, removed on sign-out.
+
+### Travel Mode
+
+Items marked travel-sensitive (`nyx:travel`) leave this device when Travel Mode is
+turned on: their rows are deleted from `vault.sqlite` (with `secure_delete`) and the
+file is rewritten (`VACUUM`); every later sync, sign-in and saved edit drops them before
+anything is stored or shown. Turning it off needs the master password confirmed just
+before and the server; the sync brings them back, and if it fails the mode stays on.
+
+What it doesn't do, and the app says so before turning it on: the server, the web
+vault and other devices keep the items; anyone with the master password and the
+server's address can sync them again; and an SSD may keep old blocks of the file.
 
 ### Browser extensions
 
@@ -143,8 +208,8 @@ dropped on lock.
    bitwarden-crypto (and, for native messaging, RustCrypto's `x25519-dalek`, `hkdf` and
    `aes-gcm`; for the security report, `sha2` and `sha1`). No other module names a
    primitive. The one exception is `ssh.rs`, which uses RustCrypto's `ssh-key` for SSH
-   key items: generating Ed25519 keys and reading OpenSSH files, nothing the vault's
-   own encryption depends on.
+   key items: generating Ed25519 keys, reading OpenSSH files, and signing for the SSH
+   agent; nothing the vault's own encryption depends on.
 2. **No plaintext on disk.** No decrypted field in SQLite, settings, caches, temp files
    or the plugin storage of any app. A test plants a canary password, runs a sync,
    copy, edit and lock, then scans every file under the app's directories for it.
@@ -155,8 +220,8 @@ dropped on lock.
 4. **No secrets in argv, environment or D-Bus signals.** `secret-tool` gets the token on
    stdin. The clipboard is served in-process. Notifications never contain the value.
 5. **No general retrieval API.** No method returns a password, TOTP seed, note or card
-   number to anything but the app. Glimpse's and the Assistant's copy calls return
-   only "copied".
+   number to anything but the app. Glimpse's, the Assistant's and other apps' copy
+   calls return only "copied"; the SSH agent returns signatures, never keys.
 6. **No indexing of secrets.** Search covers names, usernames, URIs, folder and
    collection names, in memory. Glimpse holds results for the panel's lifetime and
    writes nothing.
@@ -195,9 +260,9 @@ Copies are served by the daemon through the Wayland data-control protocol
 
 - `bitwarden-crypto` is pinned (`=4.0.0`). Upgrades are
   deliberate, read and tested against the local Vaultwarden.
-- `cargo deny` (licences, advisories, duplicate and banned crates) and `cargo audit`
-  run before every release. Allowed licences: MIT, Apache-2.0, BSD, ISC, Zlib,
-  Unicode, MPL-2.0, GPL-3.0-only.
+- `cargo deny` (licences, advisories, duplicate and banned crates) runs in CI on every
+  pull request and release (`tools/ci.py`), with clippy at `-D warnings`. Allowed
+  licences: MIT, Apache-2.0, BSD, ISC, Zlib, Unicode, MPL-2.0, GPL-3.0-only.
 - The browser extension has no runtime npm dependencies. Build tooling is pinned by
   lockfile.
 

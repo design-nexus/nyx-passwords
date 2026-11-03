@@ -59,6 +59,8 @@ type Methods = Vec<(u8, String)>;
 pub struct Service {
     pub vault: Arc<Vault>,
     pub scope: Scope,
+    /// The peer's executable name, which grants are made to.
+    pub app: String,
     /// For the browser bridge: the browser that started it.
     pub browser: Option<(i32, String)>,
     /// The peer's process, so its own window isn't taken for the one in front.
@@ -108,12 +110,51 @@ impl Service {
 
     /// A site's icon (website icons must be turned on); `NoField` when it has none.
     async fn icon(&self, host: String) -> Result<Vec<u8>, Error> {
-        Ok(self.vault.icon(self.scope, &host).await?)
+        Ok(self.vault.icon(self.scope, &host, None).await?)
     }
 
     /// Goes up with each sync applied, so the window knows when to list again.
     async fn revision(&self) -> Result<u64, Error> {
         Ok(self.vault.revision(self.scope).await?)
+    }
+
+    /// The email alias services and what each can do, as JSON.
+    async fn alias_services(&self) -> Result<String, Error> {
+        Ok(self.vault.alias_services(self.scope).await?)
+    }
+
+    /// A service's aliases as JSON `[{id, email, enabled, site, note}]`.
+    async fn list_aliases(&self, service: String) -> Result<String, Error> {
+        Ok(self.vault.list_aliases(self.scope, &service).await?)
+    }
+
+    async fn set_alias_enabled(&self, service: String, id: String, on: bool) -> Result<(), Error> {
+        Ok(self.vault.set_alias_enabled(self.scope, &service, &id, on).await?)
+    }
+
+    async fn delete_alias(&self, service: String, id: String) -> Result<(), Error> {
+        Ok(self.vault.delete_alias(self.scope, &service, &id).await?)
+    }
+
+    /// A new alias from the generator's service for a login at `site`: JSON
+    /// `{service, id, email}`.
+    async fn create_alias(&self, site: String) -> Result<String, Error> {
+        Ok(self.vault.create_alias(self.scope, &site).await?)
+    }
+
+    /// The alias a login's username is, as JSON (or `null`).
+    async fn item_alias(&self, id: String) -> Result<String, Error> {
+        Ok(self.vault.item_alias(self.scope, &id).await?)
+    }
+
+    /// The recently used items' ids, newest first, as JSON.
+    async fn recent(&self) -> Result<String, Error> {
+        Ok(self.vault.recent(self.scope).await?)
+    }
+
+    /// The window opened an item: it goes first among the recently used.
+    async fn opened_item(&self, id: String) -> Result<(), Error> {
+        Ok(self.vault.opened_item(self.scope, &id).await?)
     }
 
     /// Whether an update has replaced this daemon's binary since it started.
@@ -307,6 +348,97 @@ impl Service {
 
     async fn update_item(&self, id: String, draft: String) -> Result<(), Error> {
         Ok(self.vault.update_item(self.scope, &id, &draft).await?)
+    }
+
+    // ---- other Nyx apps (`grants.rs`) ----
+
+    /// Asks the user for access: `scopes` a JSON list of `search` and `copy`.
+    async fn request_access(&self, scopes: String, reason: String, minutes: u32) -> Result<String, Error> {
+        Ok(self.vault.request_access(self.scope, &self.app, &scopes, &reason, minutes).await?)
+    }
+
+    /// This app's grant, as JSON (or `null`).
+    async fn access_status(&self) -> Result<String, Error> {
+        Ok(self.vault.access_status(self.scope, &self.app).await?)
+    }
+
+    async fn app_search(&self, query: String, limit: u32) -> Result<Vec<Item>, Error> {
+        Ok(self.vault.app_search(self.scope, &self.app, &query, limit).await?)
+    }
+
+    /// Puts a field on the clipboard for the app; returns the seconds until it's cleared.
+    async fn app_copy(&self, id: String, field: String) -> Result<u32, Error> {
+        Ok(self.vault.app_copy(self.scope, &self.app, &id, &field).await?)
+    }
+
+    /// The grants in force, as JSON (the window's Settings).
+    async fn grants(&self) -> Result<String, Error> {
+        Ok(self.vault.list_grants(self.scope).await?)
+    }
+
+    async fn revoke_grant(&self, app: String) -> Result<(), Error> {
+        Ok(self.vault.revoke_grant(self.scope, &app).await?)
+    }
+
+    /// What other programs did with the vault, newest first, as JSON.
+    async fn activity(&self) -> Result<String, Error> {
+        Ok(self.vault.activity(self.scope).await?)
+    }
+
+    /// NetworkManager's saved Wi-Fi networks, as JSON (no passwords).
+    async fn wifi_networks(&self) -> Result<String, Error> {
+        Ok(self.vault.wifi_networks(self.scope).await?)
+    }
+
+    /// Saves the chosen networks (a JSON list of uuids) as Wi-Fi items: JSON `{added,
+    /// failed: [{name, why}]}`.
+    async fn import_wifi(&self, uuids: String) -> Result<String, Error> {
+        Ok(self.vault.import_wifi(self.scope, &uuids).await?)
+    }
+
+    /// Travel Mode's state, as JSON `{on, marked}`.
+    async fn travel_mode(&self) -> Result<String, Error> {
+        Ok(self.vault.travel_mode(self.scope).await?)
+    }
+
+    /// Turns Travel Mode on or off; on returns how many items left this device.
+    async fn set_travel_mode(&self, on: bool) -> Result<u32, Error> {
+        Ok(self.vault.set_travel_mode(self.scope, on).await?)
+    }
+
+    /// Requests waiting for the user's approval, as JSON (the window's approval card).
+    async fn approvals(&self) -> Result<String, Error> {
+        Ok(self.vault.approvals(self.scope).await?)
+    }
+
+    /// Answers one: `deny`, `once` or `session`.
+    async fn answer(&self, id: u64, answer: String) -> Result<(), Error> {
+        Ok(self.vault.answer_approval(self.scope, id, &answer).await?)
+    }
+
+    /// The SSH key items turned on for the agent, as a JSON list of ids.
+    async fn ssh_agent_keys(&self) -> Result<String, Error> {
+        Ok(self.vault.ssh_agent_keys(self.scope).await?)
+    }
+
+    async fn set_ssh_agent_key(&self, id: String, on: bool) -> Result<(), Error> {
+        Ok(self.vault.set_ssh_agent_key(self.scope, &id, on).await?)
+    }
+
+    /// The report's checks that need no password, as JSON.
+    async fn hygiene(&self) -> Result<String, Error> {
+        Ok(self.vault.hygiene(self.scope).await?)
+    }
+
+    /// Logins for sites that offer one-time codes but have none, as JSON. Downloads
+    /// 2fa.directory's list the first time while the vault is open.
+    async fn check_two_factor(&self) -> Result<String, Error> {
+        Ok(self.vault.check_two_factor(self.scope).await?)
+    }
+
+    /// The security report as counts only, as JSON (also for the Assistant).
+    async fn security_summary(&self) -> Result<String, Error> {
+        Ok(self.vault.security_summary(self.scope).await?)
     }
 
     /// Logins with a reused, weak or old password, as JSON.

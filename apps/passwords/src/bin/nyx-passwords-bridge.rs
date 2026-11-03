@@ -5,14 +5,19 @@
 //! extension and the daemon.
 
 use std::io::{Read, Write};
+use std::os::fd::FromRawFd;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use base64::Engine;
 use nyx_passwords_proto as proto;
 
 /// Frames from the browser larger than this end the connection.
 const MAX_IN: usize = 64 * 1024;
 /// Chromium refuses messages to the extension over 1 MiB.
 const MAX_OUT: usize = 1024 * 1024;
+/// The frame in hand when the bridge starts again on a new build.
+const PENDING: &str = "NYX_PASSWORDS_BRIDGE_PENDING";
 
 fn main() {
     // Firefox passes the manifest path and the extension id; Chromium the extension's
@@ -23,10 +28,14 @@ fn main() {
         Ok(rt) => rt,
         Err(_) => std::process::exit(1),
     };
-    let mut stdin = std::io::stdin().lock();
+    // Unbuffered: nothing the browser sent may be left in a buffer when the bridge
+    // starts again on a new build.
+    // SAFETY: fd 0 is stdin, open for the life of the process and used only here.
+    let mut stdin = unsafe { std::fs::File::from_raw_fd(0) };
     let mut stdout = std::io::stdout().lock();
     let mut conn: Option<zbus::Connection> = None;
-    while let Some(frame) = read_frame(&mut stdin) {
+    let mut pending = std::env::var(PENDING).ok().and_then(|f| base64::engine::general_purpose::STANDARD.decode(f).ok());
+    while let Some(frame) = pending.take().or_else(|| read_frame(&mut stdin)) {
         let reply = rt.block_on(relay(&mut conn, &caller, frame));
         if reply.len() > MAX_OUT || write_frame(&mut stdout, &reply).is_err() {
             break;
@@ -55,6 +64,11 @@ fn write_frame(output: &mut impl Write, frame: &[u8]) -> std::io::Result<()> {
 async fn relay(conn: &mut Option<zbus::Connection>, caller: &str, frame: Vec<u8>) -> Vec<u8> {
     for attempt in 0..2 {
         if conn.is_none() {
+            // An update restarts the daemon, which refuses a bridge whose binary was
+            // replaced; this one carries on as the new build instead.
+            if let Some(exe) = replaced() {
+                start_again(&exe, &frame);
+            }
             *conn = connect().await;
         }
         let Some(c) = conn.as_ref() else { break };
@@ -81,6 +95,23 @@ async fn relay(conn: &mut Option<zbus::Connection>, caller: &str, frame: Vec<u8>
     br#"{"t":"unavailable"}"#.to_vec()
 }
 
+/// This program's path, if the binary there was replaced since it started.
+fn replaced() -> Option<PathBuf> {
+    let exe = std::fs::read_link("/proc/self/exe").ok()?;
+    let path = PathBuf::from(exe.to_str()?.strip_suffix(" (deleted)")?);
+    path.is_file().then_some(path)
+}
+
+/// Runs the new build in this process, with the same browser pipes and arguments and
+/// the frame in hand. Returns only if that failed.
+fn start_again(exe: &Path, frame: &[u8]) {
+    use std::os::unix::process::CommandExt;
+    let _ = std::process::Command::new(exe)
+        .args(std::env::args_os().skip(1))
+        .env(PENDING, base64::engine::general_purpose::STANDARD.encode(frame))
+        .exec();
+}
+
 /// Connects to the daemon, starting it if needed (its unit, or the one next to this
 /// binary in a checkout).
 async fn connect() -> Option<zbus::Connection> {
@@ -100,6 +131,7 @@ async fn connect() -> Option<zbus::Connection> {
 
 fn start_daemon() {
     let quiet = |c: &mut std::process::Command| {
+        c.env_remove(PENDING);
         c.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     };
     let config = std::env::var_os("XDG_CONFIG_HOME")

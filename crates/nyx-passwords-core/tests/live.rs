@@ -96,7 +96,7 @@ async fn equivalent_domains_from_the_server() {
         username: None,
         password: Some(Secret::new("canary-apple-Pw!9")),
         totp: None,
-        uris: vec![Secret::new("https://appleid.apple.com")],
+        uris: vec![Secret::new("https://appleid.apple.com").into()],
         notes: None,
         folder: None,
         favorite: false,
@@ -139,7 +139,7 @@ async fn equivalent_domains_from_the_server() {
     assert!(!apple(&s));
     assert!(s.view.matching(&icloud).is_empty());
     draft.name = Secret::new("Example");
-    draft.uris = vec![Secret::new("https://login.example.com")];
+    draft.uris = vec![Secret::new("https://login.example.com").into()];
     s.create_login(&mut store, &server, &refresh, &draft).await.unwrap();
     assert_eq!(s.view.matching(&url::Url::parse("https://example.net/").unwrap()).len(), 1);
 }

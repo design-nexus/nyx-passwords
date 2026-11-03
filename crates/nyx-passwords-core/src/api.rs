@@ -17,6 +17,8 @@ use crate::secret::Secret;
 
 /// Linux desktop, in Bitwarden's device-type list.
 const DEVICE_TYPE: &str = "8";
+/// The first Bitwarden client version with SSH key items.
+const SSH_KEYS_SINCE: &str = "2024.12.0";
 /// The identity server's client id for desktop apps.
 const CLIENT_ID: &str = "desktop";
 const MAX_BODY: usize = 64 << 20;
@@ -406,6 +408,9 @@ impl Server {
             .http
             .get(self.at("/api/sync?excludeDomains=false"))
             .bearer_auth(access.expose())
+            // Vaultwarden leaves SSH key items out of the sync for clients that don't say
+            // they're at least this version.
+            .header("Bitwarden-Client-Version", SSH_KEYS_SINCE)
             .timeout(Duration::from_secs(180));
         let body = expect_ok(self.send(req).await?).await?;
         serde_json::from_value(body).map_err(|_| ApiError::Protocol)
