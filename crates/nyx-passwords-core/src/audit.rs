@@ -48,6 +48,17 @@ fn audited<'a>(keys: &'a Keys, sync: &'a Sync) -> impl Iterator<Item = (&'a Ciph
 }
 
 pub fn audit(keys: &Keys, sync: &Sync, now: SystemTime, cache: &mut StrengthCache) -> Vec<Finding> {
+    audit_some(keys, sync, now, cache, None)
+}
+
+/// The report for these logins only, as `audit` would find them: reuse is still counted
+/// against every password (a digest each, which is quick), but only these are scored
+/// for strength, which is what takes the time on a large vault.
+pub fn audit_only(keys: &Keys, sync: &Sync, now: SystemTime, cache: &mut StrengthCache, ids: &[Uuid]) -> Vec<Finding> {
+    audit_some(keys, sync, now, cache, Some(ids))
+}
+
+fn audit_some(keys: &Keys, sync: &Sync, now: SystemTime, cache: &mut StrengthCache, only: Option<&[Uuid]>) -> Vec<Finding> {
     let today = now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() / 86_400);
     // Digests, not passwords, and only for the length of the report.
     let mut by_password: HashMap<[u8; 32], usize> = HashMap::new();
@@ -55,6 +66,9 @@ pub fn audit(keys: &Keys, sync: &Sync, now: SystemTime, cache: &mut StrengthCach
     for (c, password) in audited(keys, sync) {
         let digest = password_digest(&password);
         *by_password.entry(digest).or_default() += 1;
+        if only.is_some_and(|ids| !ids.contains(&c.id)) {
+            continue;
+        }
         let weak = match cache.get(&c.id) {
             Some((revision, weak)) if *revision == c.revision_date => *weak,
             _ => {

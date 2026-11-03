@@ -186,6 +186,13 @@ async fn security_report() {
     // Scored once; a second report uses the cache.
     assert!(cache.len() >= 4);
     assert_eq!(audit::audit(&keys, &sync, now, &mut cache), found);
+    // Some logins only (what the browser's popup asks about): the same findings for
+    // those, reuse still counted against every password, and only those scored.
+    let mut few = StrengthCache::new();
+    let only = audit::audit_only(&keys, &sync, now, &mut few, &[weak.id, reused.id]);
+    let expected: Vec<Finding> = found.iter().filter(|f| f.id == weak.id || f.id == reused.id).cloned().collect();
+    assert_eq!(only, expected);
+    assert_eq!(few.len(), 2, "only the logins asked about were scored");
 
     // A stand-in range API: it answers any prefix with padding plus, for the weak
     // password's prefix, its own suffix.

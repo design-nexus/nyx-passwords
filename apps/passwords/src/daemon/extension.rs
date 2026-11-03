@@ -291,11 +291,14 @@ pub(super) fn read(st: &mut State, pairing: &str, request: &Value) -> Value {
                 .collect();
             let st = &mut *st;
             let Some(session) = st.session.as_ref() else { return error(Code::Locked) };
-            let found = nyx_passwords_core::audit::audit(
+            // Only the logins asked about are scored: scoring the whole vault on the first
+            // popup after unlocking held up everything else the popup asked for.
+            let found = nyx_passwords_core::audit::audit_only(
                 &session.keys,
                 &session.snapshot,
                 std::time::SystemTime::now(),
                 &mut st.strength,
+                &ids,
             );
             let flags: Vec<Value> = found
                 .iter()
