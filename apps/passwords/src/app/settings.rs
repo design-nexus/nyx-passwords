@@ -867,6 +867,16 @@ pub fn open(ui: &Ui) {
         v.glimpse,
         |p, x| p.vault.glimpse = x,
     );
+    if std::path::Path::new(nyx_auth_proto::keyd::SOCKET).exists() {
+        switch(
+            &g,
+            "Protected items in Glimpse",
+            "Copy from items that ask for the master password again after confirming it's you, with your face, fingerprint, \
+             security key or password as Sign-in & Security is set up. Off, they open only in Passwords.",
+            v.glimpse_protected,
+            |p, x| p.vault.glimpse_protected = x,
+        );
+    }
     switch(
         &g,
         "Nyx Assistant",

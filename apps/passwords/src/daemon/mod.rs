@@ -7,6 +7,7 @@ mod browser;
 mod clipboard;
 mod extension;
 mod face_unlock;
+mod sign_in;
 pub use extension::theme as extension_theme;
 mod grants;
 mod icons;

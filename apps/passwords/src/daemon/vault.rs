@@ -266,6 +266,7 @@ impl Vault {
             _ => return Err(Failure::new(Code::NoField, "unknown field")),
         };
         let id = parse_id(id)?;
+        let signed_in = self.sign_in_for_glimpse(scope, id, field).await?;
         let (value, settings, label) = {
             let mut st = self.state.lock().await;
             allow_finder(scope, &mut st)?;
@@ -278,7 +279,9 @@ impl Vault {
                 return Err(Failure::new(Code::RateLimited, "too many copies; wait a minute"));
             }
             let settings = st.settings.refresh().clone();
-            reprompt_check(&st, scope, id, field)?;
+            if !signed_in {
+                reprompt_check(&st, scope, id, field)?;
+            }
             let session = st.session.as_ref().ok_or_else(locked)?;
             let value = reveal(&session.keys, &session.snapshot, id, field)?;
             st.last_used = Instant::now();
@@ -301,6 +304,42 @@ impl Vault {
             (value, settings, label)
         };
         self.put_on_clipboard(value, &settings, label).await
+    }
+
+    /// For Glimpse and an item that asks for the master password again: whether the person
+    /// confirmed with Nyx Biometrics (when that's turned on), asked without holding the vault.
+    async fn sign_in_for_glimpse(&self, scope: Scope, id: Uuid, field: Field) -> Result<bool> {
+        if scope != Scope::Glimpse || field == Field::Username {
+            return Ok(false);
+        }
+        let item = {
+            let mut st = self.state.lock().await;
+            allow_finder(scope, &mut st)?;
+            if !st.settings.refresh().glimpse_protected {
+                return Ok(false);
+            }
+            let session = st.session.as_ref().ok_or_else(locked)?;
+            match session.view.get(id).filter(|e| e.reprompt) {
+                Some(e) => e.name.expose().to_string(),
+                None => return Ok(false),
+            }
+        };
+        if !super::sign_in::available() {
+            return Ok(false);
+        }
+        let what = match field {
+            Field::Password => "password",
+            Field::Totp => "one-time code",
+            _ => "field",
+        };
+        let what = what.to_string();
+        let confirmed = tokio::task::spawn_blocking(move || super::sign_in::confirm(&what, &item)).await.unwrap_or(false);
+        if !confirmed {
+            let st = self.state.lock().await;
+            super::grants::record(&st, "Glimpse", "copy a protected item", Some(id), "not confirmed");
+            return Err(Failure::new(Code::Denied, "Not confirmed: this item stays in Passwords"));
+        }
+        Ok(true)
     }
 
     /// Generates with the saved rules and copies the result.

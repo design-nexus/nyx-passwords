@@ -128,6 +128,7 @@ fn spawn_daemon(dir: &Path, keyring: bool, system_bus: Option<&str>) -> Child {
             .env("XDG_RUNTIME_DIR", dir.join("run"))
             .env("XDG_CONFIG_HOME", dir.join("config"))
             .env("XDG_DATA_HOME", dir.join("data"))
+            .env("NYX_PW_TEST_SIGN_IN", dir.join("sign-in"))
             // Never the real system bus: no test reads this computer's Wi-Fi networks.
             .env(
                 "DBUS_SYSTEM_BUS_ADDRESS",
@@ -558,6 +559,23 @@ async fn signed_in_vault() {
     assert_eq!(err(&app[2]), "Failed");
     assert_eq!(err(&app[3]), "Reprompt");
     assert_eq!(ok(&app[5]), "canary-guarded-Pw!9");
+
+    // With "Protected items in Glimpse" on, Glimpse gets them once the person confirms
+    // through Nyx Biometrics, and not otherwise.
+    let settings = s.dir.path().join("config/nyx-passwords/settings.toml");
+    let before = std::fs::read_to_string(&settings).unwrap();
+    std::fs::write(&settings, format!("{before}glimpse_protected = true\n")).unwrap();
+    let answer = s.dir.path().join("sign-in");
+    std::fs::write(&answer, "no").unwrap();
+    let g = s.as_peer("nyx-glimpse", json!([["Copy", bank, "password"]]));
+    assert_eq!(err(&g[0]), "Denied");
+    std::fs::write(&answer, "yes").unwrap();
+    let g = s.as_peer("nyx-glimpse", json!([["Copy", bank, "password"], ["Copy", bank, "username"]]));
+    // Past the guard: only the clipboard is missing here (no display in the tests).
+    assert_eq!((err(&g[0]), err(&g[1])), ("Clipboard", "Clipboard"));
+    assert_eq!(s.as_peer("stranger", json!([["Copy", bank, "password"]]))[0], json!({"connect": "closed"}));
+    std::fs::remove_file(&answer).unwrap();
+    std::fs::write(&settings, before).unwrap();
 
     // Attachments go in from a file the app opened and come out into another one; the
     // contents never pass through the call itself. Glimpse gets neither.
