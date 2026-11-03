@@ -1023,6 +1023,7 @@ pub fn open(ui: &Ui) {
                 ("Keyboard", "input-keyboard-symbolic", "Shortcuts"),
             ],
             search_text: None,
+            standard: None,
         },
         root.upcast_ref(),
         &body,
