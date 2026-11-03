@@ -13,7 +13,8 @@ icon="$root/crates/nyx-icons/apps/io.github.design_nexus.nyx.Passwords.svg"
 command -v rsvg-convert >/dev/null || { echo "rsvg-convert (librsvg) is needed for the icons" >&2; exit 1; }
 command -v zip >/dev/null || { echo "zip is needed for the Firefox package" >&2; exit 1; }
 
-rm -rf "$out"
+# Only what this script makes: other files here (signed builds in signed/) stay.
+rm -rf "$out/chromium" "$out/firefox" "$out/nyx-passwords-firefox.xpi"
 for browser in chromium firefox; do
   dir="$out/$browser"
   mkdir -p "$dir"
