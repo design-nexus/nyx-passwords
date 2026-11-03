@@ -83,6 +83,13 @@ with the names in `nyx-passwords-proto`.
   arrive out of order), so a recorded frame can't be replayed, even after a restart.
 - **Failures:** a frame that fails to decrypt is dropped, and three failures close the
   connection.
+- **The unlock window:** while the vault is locked the pairing key is locked with it,
+  so nothing sealed can be read. One frame goes unsealed instead,
+  `{"t":"unlock","p":<pairing id>}`: if that pairing is stored for this extension and
+  the vault is locked, the daemon shows the Passwords window's unlock page (the face
+  first, where Nyx Biometrics is set up) and says `shown`; otherwise `unlocked`,
+  `unknown`, or `busy` within 5 seconds of the last. It carries nothing and returns
+  nothing from the vault; the user unlocks in Passwords as usual, never in the browser.
 
 | Request | Reply | Allowed when |
 | --- | --- | --- |
@@ -91,7 +98,7 @@ with the names in `nyx-passwords-proto`.
 | `context {url}` | `{}` | unlocked. The URL is the active tab's, from `tabs` in the background script; the daemon keeps its origin for 10 s for Glimpse |
 | `match {url}` | `{items: [{id, name, username, host, favorite, has_totp, has_password, reprompt, sign_in_with, has_passkey}]}` | unlocked; only items whose URIs match `url` under their match rule (with the account's equivalent domains) |
 | `search {q}` | `{items: [{id, name, username, host, kind, sub, has_totp, favorite, reprompt}]}` | unlocked; names and usernames from across the vault (`sub`: a card's brand and last four digits, an identity's name), no secrets; up to 50 hits, or the first 1000 items (favorites first) for an empty query. The background script answers it for the popup only |
-| `item {id}` | the summary, plus `uris`, `has_password`, `has_passkey`, `editable`, `sign_in_with` | unlocked; popup only |
+| `item {id}` | the summary, plus `uris`, `has_password`, `has_passkey`, `editable`, `sign_in_with`; for an SSH key, `ssh_public_key` and `ssh_fingerprint` (not for one that asks for the master password). Never a private key | unlocked; popup only |
 | `icon {host}` | `{url}` (a `data:` URL) | unlocked, website icons on in the app, and `host` is a site the vault has an item for; through the server's icon service, kept in memory. Waits at most 250 ms (the fetch goes on, for next time); a failed fetch isn't retried for 10 minutes |
 | `fill {url, id, frame, confirmed, trigger}` | `{id, has_totp, username, password}` | unlocked; `id` is among `match(url)` (or, with `confirmed`, any login the user picked in the popup and confirmed for this page after a warning); `frame` has the same base domain as `url`. With `trigger: "load"` there's no `id`: see "Filling as the page loads" |
 | `totp {url, id, frame}` | `{code, period, period_left}` | as `fill` without `confirmed` |
@@ -109,7 +116,8 @@ with the names in `nyx-passwords-proto`.
 | `passkey.list {url, rp_id, allow}` | `{items: [{id, name, credential_id, user_name}]}` | passkeys on (in the app and the extension); `rp_id` is the page's host or a registrable domain above it (`matching::valid_rp_id`) |
 | `passkey.get {url, rp_id, id, credential_id, client_data_hash, confirmed}` | `{credential_id, authenticator_data, signature, user_handle}` | as `passkey.list`, `confirmed` (the user picked it in the extension's own window), not for items that ask for the master password |
 | `passkey.create {url, rp_id, rp_name, user_id, user_name, user_display_name, client_data_hash, exclude, rk, into, confirmed}` | `{id, credential_id, attestation_object, authenticator_data, public_key, algorithm}` | as `passkey.get`; `into` is a login matching the page, or none for a new one; refused (`Excluded`) when the site already has one of the listed credentials |
-| `unlock` | `{}` | opens the app's unlock page; returns at once |
+| `unlock` | `{}` | brings up the Passwords window (while locked, see the unlock window above); returns at once |
+| `open {id}` | `{}` | shows that item in the Passwords window, for what stays in the app (an SSH key's private half, notes); `NotFound` for an item that isn't there |
 | `lock` | `{}` | locks the vault (the popup's lock button) |
 
 Fills, copies and changes share a limit of 30 a minute per pairing.

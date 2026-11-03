@@ -109,6 +109,17 @@ async function request(body) {
   return JSON.parse(dec.decode(plain));
 }
 
+/// Asks Passwords to show its unlock window. While the vault is locked the pairing key is
+/// locked too, so this one frame goes unsealed, naming the pairing; it can only show the
+/// window, where the user unlocks as usual.
+async function showUnlock() {
+  const { pairing } = await api.storage.local.get("pairing");
+  if (!pairing) return { state: "unpaired" };
+  const reply = await native({ t: "unlock", p: pairing.id });
+  if (reply.t === "unlocked") return request({ r: "unlock" });
+  return { state: reply.t, error: reply.error };
+}
+
 // ---- this browser's settings ----
 
 const DEFAULTS = { fillOnLoad: true, inlineMenu: true, copyTotp: true, passkeys: false, rememberSignIn: true };
@@ -369,7 +380,7 @@ async function menuAct(entry, message) {
     case "menu.signin":
       return { clicked: await inFrame(tab.id, entry.frameId, clickProvider, [originOf(entry.frameUrl), message.provider]) };
     case "menu.unlock":
-      return request({ r: "unlock" });
+      return showUnlock();
     default:
       return { error: "unknown" };
   }
@@ -634,7 +645,9 @@ async function fromPopup(message) {
     case "username":
       return request({ r: "username", url: tab?.url ?? "" });
     case "unlock":
-      return request({ r: "unlock" });
+      return showUnlock();
+    case "open":
+      return request({ r: "open", id: message.id });
     case "save":
       return save();
     case "settings":

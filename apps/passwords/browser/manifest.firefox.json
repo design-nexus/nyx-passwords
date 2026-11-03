@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Nyx Passwords",
   "description": "Logins, cards, addresses and passkeys from Nyx Passwords, your Vaultwarden vault on this computer.",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "browser_specific_settings": {
     "gecko": {
       "id": "nyx-passwords@design-nexus.github.io",
@@ -24,7 +24,23 @@
   },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Nyx Passwords"
+    "default_title": "Nyx Passwords",
+    "default_icon": {
+      "16": "toolbar-dark.svg",
+      "32": "toolbar-dark.svg"
+    },
+    "theme_icons": [
+      {
+        "light": "toolbar-light.svg",
+        "dark": "toolbar-dark.svg",
+        "size": 16
+      },
+      {
+        "light": "toolbar-light.svg",
+        "dark": "toolbar-dark.svg",
+        "size": 32
+      }
+    ]
   },
   "permissions": [
     "nativeMessaging",

@@ -35,6 +35,8 @@ const CLOCK_SKEW_MS: u64 = 5 * 60 * 1000;
 const SEEN: usize = 64;
 /// How long an extension's icon request waits for a fetch.
 const ICON_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
+/// How often a paired extension may have the unlock window shown while locked.
+const UNLOCK_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 const FILLS_PER_MINUTE: usize = 30;
 /// Usernames a pairing may ask for in a minute: each may make a real alias at a service.
 const USERNAMES_PER_MINUTE: usize = 5;
@@ -45,6 +47,8 @@ pub struct Browser {
     pending: Vec<Pending>,
     active: HashMap<String, Active>,
     pub context: Option<Context>,
+    /// When a paired extension last had the unlock window shown.
+    unlock_shown: Option<Instant>,
 }
 
 struct Pending {
@@ -138,6 +142,7 @@ impl Vault {
         let reply = match msg["t"].as_str() {
             Some("hello") => self.hello(extension, &browser.1, &msg).await,
             Some("msg") => self.sealed(extension, browser, &msg).await,
+            Some("unlock") => self.show_unlock(extension, &msg).await,
             _ => json!({"t": "error", "error": "unknown"}),
         };
         Ok(reply.to_string().into_bytes())
@@ -171,6 +176,29 @@ impl Vault {
         }
         self.notifier.send(&format!("Pair {browser} with Passwords?"), "Open Passwords to compare the code and confirm.").await;
         json!({"t": "pairing", "p": id, "pub": b64(&paired.public)})
+    }
+
+    /// A paired extension asks for Passwords' unlock window. While the vault is locked its
+    /// pairing key is locked too, so this one frame isn't sealed: it names a stored pairing
+    /// of this extension, and can only show the window, where the user unlocks as usual
+    /// (nothing comes back but whether it was shown), once every few seconds.
+    async fn show_unlock(&self, extension: &str, msg: &Value) -> Value {
+        let p = msg["p"].as_str().unwrap_or_default();
+        let mut st = self.state.lock().await;
+        if st.session.is_some() {
+            return json!({"t": "unlocked"});
+        }
+        let paired = st.store.pairings().ok().is_some_and(|all| all.iter().any(|x| x.id == p && x.extension == extension));
+        if !paired {
+            return json!({"t": "unknown"});
+        }
+        if st.browser.unlock_shown.is_some_and(|at| at.elapsed() < UNLOCK_EVERY) {
+            return json!({"t": "error", "error": "busy"});
+        }
+        st.browser.unlock_shown = Some(Instant::now());
+        drop(st);
+        launch_app(&["--unlock"]);
+        json!({"t": "shown"})
     }
 
     async fn sealed(&self, extension: &str, browser: &(i32, String), msg: &Value) -> Value {
@@ -507,17 +535,32 @@ fn handle(st: &mut State, pairing: &str, browser: &(i32, String), request: &Valu
             }
         }
         Some("unlock") => {
-            if let Some(app) = super::peer::allowed_dir().map(|d| d.join("nyx-passwords")) {
-                let _ = std::process::Command::new(app)
-                    .arg("--unlock")
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn();
+            launch_app(&["--unlock"]);
+            json!({})
+        }
+        // Shows an item in the Passwords window: for what stays in the app (an SSH key's
+        // private half, notes).
+        Some("open") => {
+            let Some(id) = request["id"].as_str().and_then(|i| parse_id(i).ok()) else { return error(Code::NotFound) };
+            if !st.session.as_ref().is_some_and(|s| s.view.get(id).is_some_and(|e| !e.deleted)) {
+                return error(Code::NotFound);
             }
+            launch_app(&["--item", &id.to_string()]);
             json!({})
         }
         _ => super::extension::read(st, pairing, request),
+    }
+}
+
+/// Starts the Passwords window with these arguments, detached.
+fn launch_app(args: &[&str]) {
+    if let Some(app) = super::peer::allowed_dir().map(|d| d.join("nyx-passwords")) {
+        let _ = std::process::Command::new(app)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
     }
 }
 

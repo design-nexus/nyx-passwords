@@ -56,6 +56,8 @@ header.hidden-search .search { visibility: hidden; }
 .field .value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .field .value.secret { letter-spacing: 0.12em; }
 .field .value.code { font: 600 19px var(--font-mono); letter-spacing: 0.06em; color: var(--text); }
+.field .value.mono { font: 12px var(--font-mono); }
+.field .value.wrap { white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
 .field .value a { color: var(--accent); text-decoration: none; }
 .field .actions { display: flex; gap: 2px; opacity: 0; transition: opacity 120ms ease-out; }
 .field:hover .actions, .field:focus-within .actions { opacity: 1; }
