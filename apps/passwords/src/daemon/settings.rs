@@ -31,6 +31,9 @@ pub struct Settings {
     pub icons: bool,
     /// Whether Glimpse may search the vault and copy from it.
     pub glimpse: bool,
+    /// Glimpse may copy from items that ask for the master password again once the
+    /// person confirms it's them through Nyx Biometrics. Off until turned on.
+    pub glimpse_protected: bool,
     /// Whether Nyx Assistant may find logins and copy from them (each call still needs
     /// a key press there). Off until turned on.
     pub assistant: bool,
@@ -65,6 +68,7 @@ impl Default for Settings {
             live_sync: true,
             icons: false,
             glimpse: true,
+            glimpse_protected: false,
             assistant: false,
             extra_ca: None,
             generate_passphrase: false,
