@@ -153,8 +153,9 @@ mod tests {
 
     #[test]
     fn passphrases_follow_rules() {
-        let p = passphrase(&PassphraseRules::default()).unwrap();
-        let words: Vec<&str> = p.expose().split('-').collect();
+        // Not the default "-": a few words in the list have hyphens ("t-shirt").
+        let p = passphrase(&PassphraseRules { separator: "_".into(), ..Default::default() }).unwrap();
+        let words: Vec<&str> = p.expose().split('_').collect();
         assert_eq!(words.len(), 5);
         assert!(words.iter().all(|w| w.chars().next().unwrap().is_ascii_uppercase()));
         assert_eq!(words.iter().filter(|w| w.chars().any(|c| c.is_ascii_digit())).count(), 1);
