@@ -1,10 +1,12 @@
 //! Confirming it's the person at the screen, through Nyx Biometrics, before Glimpse copies
 //! from an item that asks for the master password again.
 //!
-//! The daemon asks polkit about itself with Nyx Biometrics' `app-action` ("authenticate as
-//! yourself"). The system's authentication dialog takes the face,
-//! fingerprint, security key or password the computer is set up for; nothing here sees
-//! which. Without Nyx Biometrics the item stays as before: Passwords only.
+//! The daemon asks Nyx Biometrics' sign-in broker (`nyx-authd`) under the `vault` policy:
+//! the broker knows the daemon from its bus connection, applies the policy, shows the
+//! system's prompt (face, fingerprint, security key or password, as the computer is set
+//! up; nothing here sees which) and keeps an audit line. An older Nyx Biometrics without
+//! the broker gets the same prompt from polkit directly (`app-action`). Without Nyx
+//! Biometrics the item stays as before: Passwords only.
 
 use std::process::{Command, Stdio};
 
@@ -35,13 +37,35 @@ fn subject() -> Option<String> {
     Some(format!("{},{start},{uid}", std::process::id()))
 }
 
-/// Whether the person confirmed. Blocks until the dialog is answered. Polkit lets only
-/// root pass a message of its own, so the dialog shows the action's ("Confirm it's you to
-/// allow this").
-pub fn confirm() -> bool {
+/// Whether the person confirmed, waiting until the prompt is answered.
+pub async fn confirm() -> bool {
     if let Some(answer) = test_answer() {
         return answer;
     }
+    match broker().await {
+        Ok(reply) => reply.outcome == nyx_auth_proto::Outcome::Granted,
+        // No broker on this computer (or no session bus): ask polkit directly.
+        Err(_) => tokio::task::spawn_blocking(polkit).await.unwrap_or(false),
+    }
+}
+
+async fn broker() -> zbus::Result<nyx_auth_proto::Reply> {
+    use nyx_auth_proto::{AuthProxy, Request, Surface};
+    let conn = zbus::Connection::session().await?;
+    AuthProxy::new(&conn)
+        .await?
+        .authenticate(Request {
+            action: "io.github.design_nexus.nyx.passwords.copy-protected".into(),
+            purpose: "Copy from a protected item in Glimpse".into(),
+            surface: Surface::Vault,
+            grant_secs: 0,
+        })
+        .await
+}
+
+/// Polkit lets only root pass a message of its own, so the dialog shows the action's
+/// ("Confirm it's you to allow this").
+fn polkit() -> bool {
     let Some(subject) = subject() else { return false };
     Command::new(PKCHECK)
         .args(["--action-id", ACTION, "--process", &subject, "--allow-user-interaction"])

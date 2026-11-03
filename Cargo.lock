@@ -2325,7 +2325,7 @@ dependencies = [
 [[package]]
 name = "nyx-auth-core"
 version = "0.1.0"
-source = "git+https://github.com/design-nexus/nyx-biometrics.git?rev=3565fe9b944d038a62ed29aa3c8a2300503f269a#3565fe9b944d038a62ed29aa3c8a2300503f269a"
+source = "git+https://github.com/design-nexus/nyx-biometrics.git?rev=4c6640c556afa8fdb165544cca6dd7e620533cb5#4c6640c556afa8fdb165544cca6dd7e620533cb5"
 dependencies = [
  "serde",
  "thiserror",
@@ -2336,11 +2336,12 @@ dependencies = [
 [[package]]
 name = "nyx-auth-proto"
 version = "0.1.0"
-source = "git+https://github.com/design-nexus/nyx-biometrics.git?rev=3565fe9b944d038a62ed29aa3c8a2300503f269a#3565fe9b944d038a62ed29aa3c8a2300503f269a"
+source = "git+https://github.com/design-nexus/nyx-biometrics.git?rev=4c6640c556afa8fdb165544cca6dd7e620533cb5#4c6640c556afa8fdb165544cca6dd7e620533cb5"
 dependencies = [
  "nyx-auth-core",
  "serde",
  "serde_json",
+ "zbus",
  "zvariant",
 ]
 

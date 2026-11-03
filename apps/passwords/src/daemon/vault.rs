@@ -326,7 +326,7 @@ impl Vault {
         if !super::sign_in::available() {
             return Ok(false);
         }
-        let confirmed = tokio::task::spawn_blocking(super::sign_in::confirm).await.unwrap_or(false);
+        let confirmed = super::sign_in::confirm().await;
         if !confirmed {
             let st = self.state.lock().await;
             super::grants::record(&st, "Glimpse", "copy a protected item", Some(id), "not confirmed");
