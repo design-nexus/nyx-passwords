@@ -38,25 +38,50 @@ fn subject() -> Option<String> {
 }
 
 /// Whether the person confirmed, waiting until the prompt is answered.
-pub async fn confirm() -> bool {
+pub async fn confirm(why: Why) -> bool {
     if let Some(answer) = test_answer() {
         return answer;
     }
-    match broker().await {
+    match broker(why).await {
         Ok(reply) => reply.outcome == nyx_auth_proto::Outcome::Granted,
         // No broker on this computer (or no session bus): ask polkit directly.
         Err(_) => tokio::task::spawn_blocking(polkit).await.unwrap_or(false),
     }
 }
 
-async fn broker() -> zbus::Result<nyx_auth_proto::Reply> {
+/// What the person is confirming, as the broker's action and purpose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Why {
+    /// Glimpse copying from an item that asks for the master password again.
+    CopyProtected,
+    /// A site that requires user verification for a passkey.
+    Passkey,
+}
+
+impl Why {
+    fn action(self) -> &'static str {
+        match self {
+            Why::CopyProtected => "io.github.design_nexus.nyx.passwords.copy-protected",
+            Why::Passkey => "io.github.design_nexus.nyx.passwords.passkey-verify",
+        }
+    }
+
+    fn purpose(self) -> &'static str {
+        match self {
+            Why::CopyProtected => "Copy from a protected item in Glimpse",
+            Why::Passkey => "Use a passkey for a site that asks to verify you",
+        }
+    }
+}
+
+async fn broker(why: Why) -> zbus::Result<nyx_auth_proto::Reply> {
     use nyx_auth_proto::{AuthProxy, Request, Surface};
     let conn = zbus::Connection::session().await?;
     AuthProxy::new(&conn)
         .await?
         .authenticate(Request {
-            action: "io.github.design_nexus.nyx.passwords.copy-protected".into(),
-            purpose: "Copy from a protected item in Glimpse".into(),
+            action: why.action().into(),
+            purpose: why.purpose().into(),
             surface: Surface::Vault,
             grant_secs: 0,
         })

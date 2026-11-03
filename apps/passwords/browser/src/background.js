@@ -464,7 +464,7 @@ async function passkey(kind, options, sender) {
   if (!choice) return { fallback: choice === null };
   if (kind === "get") {
     const picked = choices[choice.index];
-    const a = await request({ r: "passkey.get", url: sender.url, rp_id: rpId, id: picked.id, credential_id: picked.credential_id, client_data_hash: hash, confirmed: true });
+    const a = await request({ r: "passkey.get", url: sender.url, rp_id: rpId, id: picked.id, credential_id: picked.credential_id, client_data_hash: hash, uv: options.userVerification ?? "preferred", confirmed: true });
     if (a.error) return { error: a.error };
     return { credential: { id: a.credential_id, clientDataJSON: b64url(enc.encode(clientData)), authenticatorData: a.authenticator_data, signature: a.signature, userHandle: a.user_handle } };
   }
@@ -479,6 +479,7 @@ async function passkey(kind, options, sender) {
     client_data_hash: hash,
     exclude: (options.excludeCredentials ?? []).map((c) => c.id),
     rk: options.authenticatorSelection?.residentKey !== "discouraged",
+    uv: options.authenticatorSelection?.userVerification ?? "preferred",
     into: choice.into ?? null,
     confirmed: true,
   });

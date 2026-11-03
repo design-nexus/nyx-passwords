@@ -326,7 +326,7 @@ impl Vault {
         if !super::sign_in::available() {
             return Ok(false);
         }
-        let confirmed = super::sign_in::confirm().await;
+        let confirmed = super::sign_in::confirm(super::sign_in::Why::CopyProtected).await;
         if !confirmed {
             let st = self.state.lock().await;
             super::grants::record(&st, "Glimpse", "copy a protected item", Some(id), "not confirmed");
