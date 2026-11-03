@@ -1339,6 +1339,22 @@ async fn paired_browser() {
     assert_eq!((data.len(), data[32] & 1), (37, 1), "user present");
     assert_eq!(r[1]["error"], "Denied");
 
+    // A site that requires user verification gets Nyx Biometrics' prompt: refused there,
+    // nothing is signed; confirmed, it signs. "preferred" asks nothing more.
+    let answer = s.dir.path().join("sign-in");
+    let get = |uv: &str| {
+        json!({"r": "passkey.get", "url": "https://webauthn.example/login", "rp_id": "webauthn.example", "id": made["id"],
+               "credential_id": made["credential_id"], "client_data_hash": hash, "uv": uv, "confirmed": true})
+    };
+    std::fs::write(&answer, "no").unwrap();
+    let r = s.as_browser(&json!([get("required"), get("preferred")]).to_string());
+    assert_eq!(r[0]["error"], "Denied", "{}", r[0]);
+    assert!(r[1]["signature"].is_string(), "{}", r[1]);
+    std::fs::write(&answer, "yes").unwrap();
+    let r = s.as_browser(&json!([get("required")]).to_string());
+    assert!(r[0]["signature"].is_string(), "{}", r[0]);
+    std::fs::remove_file(&answer).unwrap();
+
     // No secret ever came back in clear.
     for reply in &r {
         assert_ne!(reply["t"], "msg");

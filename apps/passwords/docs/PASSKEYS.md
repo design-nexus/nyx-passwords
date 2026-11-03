@@ -46,8 +46,12 @@ From `fido2-authenticator.service.ts`:
   eligible and backed up both set (the passkey syncs).
 - **Counter:** stays 0, as stored. This avoids clashes between devices that sync.
 - **User presence:** always asked. The authenticator doesn't answer until the user
-  confirms or declines. User verification is partial: unlocking counts, with the master
-  password as the fallback.
+  confirms or declines.
+- **User verification:** when a site requires it (`userVerification: "required"`) and
+  Nyx Biometrics is installed, the daemon asks its sign-in broker first (the face, a
+  fingerprint, a security key or the password, as Sign-in & Security is set up), and
+  signs nothing if the person doesn't confirm. Otherwise an unlocked vault counts, as in
+  the official clients.
 
 Matching all of this is what makes a passkey made here work in the official clients
 and the reverse.
@@ -97,8 +101,9 @@ The private key never leaves the daemon, like every other secret:
 - **User presence:** a confirmation the page can't draw. That means the extension's
   own popup window (`windows.create`), naming the site and the account, or the
   Passwords window, never anything inside the page.
-- **User verification:** when a site requires it, a recent master-password
-  confirmation, the same grace window "ask for master password" items use.
+- **User verification:** when a site requires it, Nyx Biometrics' sign-in broker
+  confirms the person (`passkey-verify`, under the `vault` policy); without Nyx
+  Biometrics, an unlocked vault.
 - **Saving:** a new passkey goes onto the matching login, or a new login, with an edit
   through the core like any other. `fido2Credentials` is encrypted with the item key.
   Items with "ask for master password" ask first, as for filling.
