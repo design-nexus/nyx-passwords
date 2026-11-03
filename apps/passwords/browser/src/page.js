@@ -20,18 +20,40 @@
     return Uint8Array.from(s, (c) => c.charCodeAt(0)).buffer;
   };
 
+  // The content script loads after this one (once the page is ready): a request it
+  // doesn't acknowledge goes to the browser's own.
   let next = 0;
   function ask(kind, options) {
     const id = `${Date.now()}-${next++}`;
     return new Promise((resolve) => {
+      const unheard = setTimeout(() => done({ fallback: true }), 500);
       const listen = (e) => {
-        if (e.source !== window || e.data?.nyx !== "webauthn-reply" || e.data.id !== id) return;
+        if (e.source !== window || e.data?.id !== id) return;
+        if (e.data.nyx === "webauthn-ack") clearTimeout(unheard);
+        if (e.data.nyx === "webauthn-reply") done(e.data.answer);
+      };
+      const done = (answer) => {
+        clearTimeout(unheard);
         window.removeEventListener("message", listen);
-        resolve(e.data.answer);
+        resolve(answer);
       };
       window.addEventListener("message", listen);
       window.postMessage({ nyx: "webauthn", id, kind, options }, location.origin);
     });
+  }
+
+  // `getPublicKey()` is SubjectPublicKeyInfo; Passwords gives the COSE key (a P-256 map
+  // of fixed layout: x at 10, y at 45).
+  const SPKI_P256 = [0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00, 0x04];
+  function spki(cose) {
+    if (!cose) return null;
+    const k = new Uint8Array(bytes(cose));
+    if (k.length !== 77 || k[9] !== 0x20 || k[44] !== 0x20) return null;
+    const out = new Uint8Array(SPKI_P256.length + 64);
+    out.set(SPKI_P256);
+    out.set(k.subarray(10, 42), SPKI_P256.length);
+    out.set(k.subarray(45, 77), SPKI_P256.length + 32);
+    return out.buffer;
   }
 
   function credential(kind, c) {
@@ -49,7 +71,7 @@
               attestationObject: bytes(c.attestationObject),
               getTransports: () => ["internal", "hybrid"],
               getAuthenticatorData: () => bytes(c.authenticatorData),
-              getPublicKey: () => null,
+              getPublicKey: () => spki(c.publicKey),
               getPublicKeyAlgorithm: () => c.algorithm,
             },
             AuthenticatorAttestationResponse.prototype,
@@ -70,7 +92,11 @@
         response:
           kind === "get"
             ? { clientDataJSON: c.clientDataJSON, authenticatorData: c.authenticatorData, signature: c.signature, userHandle: c.userHandle }
-            : { clientDataJSON: c.clientDataJSON, attestationObject: c.attestationObject, transports: ["internal", "hybrid"], authenticatorData: c.authenticatorData, publicKeyAlgorithm: c.algorithm },
+            : {
+                clientDataJSON: c.clientDataJSON, attestationObject: c.attestationObject, transports: ["internal", "hybrid"],
+                authenticatorData: c.authenticatorData, publicKeyAlgorithm: c.algorithm,
+                publicKey: spki(c.publicKey) && b64url(spki(c.publicKey)),
+              },
       }),
     };
     return Object.setPrototypeOf(out, PublicKeyCredential.prototype);

@@ -25,6 +25,9 @@ const pages = {
   "/login": `<form id="f" action="/done"><input id="user" name="username" autocomplete="username"><input id="pass" type="password" name="password"><button>Sign in</button></form>`,
   "/signup": `<form id="f" action="/done" method="get"><input id="email" type="email" name="email" autocomplete="email"><input id="p1" type="password" autocomplete="new-password"><input id="p2" type="password" autocomplete="new-password"><button id="go">Create account</button></form>`,
   "/checkout": `<form><input id="ccname" autocomplete="cc-name"><input id="ccnum" autocomplete="cc-number"><input id="cvc" autocomplete="cc-csc"></form>`,
+  "/step1": `<form action="/step2"><input id="who" name="username" autocomplete="username"><button id="next">Next</button></form>`,
+  "/step2": `<form action="/done"><input id="pw" type="password" autocomplete="current-password"><button id="in">Sign in</button></form>`,
+  "/change": `<form action="/done"><input id="cur" type="password" autocomplete="current-password"><input id="n1" type="password" autocomplete="new-password"><input id="n2" type="password" autocomplete="new-password"><button id="save">Save</button></form>`,
   "/done": `<p>Signed in.</p>`,
   "/social": `<p>Welcome</p><a id="google" href="/social-back?code=1">Sign in with Google</a><form><input id="who" autocomplete="username"><input type="password" id="pw"></form>`,
   "/social-back": `<p>Signed in with Google.</p>`,
@@ -108,10 +111,14 @@ async function run(context, expression) {
 async function contexts() {
   const tree = await bidi("browsingContext.getTree", {});
   const all = [];
-  const walk = (list) => list.forEach((c) => (all.push(c), walk(c.children ?? [])));
-  walk(tree.contexts);
+  const walk = (list, top) => list.forEach((c) => (all.push({ ...c, top }), walk(c.children ?? [], false)));
+  walk(tree.contexts, true);
   return all;
 }
+const extPage = (page) => async () => (await contexts()).find((c) => c.url.startsWith(`moz-extension://${UUID}/${page}`));
+const setValues = (pairs) =>
+  `(() => { const s = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    for (const [sel, v] of ${JSON.stringify(pairs)}) s.call(document.querySelector(sel), v); })()`;
 async function waitFor(what, test, ms = 15000) {
   const until = Date.now() + ms;
   for (;;) {
@@ -153,6 +160,39 @@ try {
     return v.pass ? v : null;
   });
 
+  // Picking the login from the menu fills it, and leaves no menu open.
+  await clickIn(tab, "#user");
+  const loginMenu = await waitFor("the login menu", extPage("menu.html"));
+  await waitFor("its login", async () => run(loginMenu.context, `document.querySelectorAll(".row").length`));
+  await clickIn(loginMenu.context, ".row");
+  await sleep(1500);
+  results.menuAfterPick = Boolean(await extPage("menu.html")());
+
+  // Signing in with what was filled: nothing to save.
+  await clickIn(tab, "#f button");
+  await sleep(4000);
+  results.barAfterFill = Boolean(await extPage("bar.html")());
+
+  // A sign-in in two steps: the username, then the password on its own page.
+  await bidi("browsingContext.navigate", { context: tab, url: `${origin}/step1`, wait: "complete" });
+  await run(tab, setValues([["#who", "octo"]]));
+  await clickIn(tab, "#next");
+  await waitFor("the password step", async () => (await run(tab, `location.pathname`)) === "/step2");
+  await sleep(800);
+  await run(tab, setValues([["#pw", "canary-local-Pw!9"]]));
+  await clickIn(tab, "#in");
+  await sleep(4000);
+  results.barAfterTwoSteps = Boolean(await extPage("bar.html")());
+
+  // A change-password form: the bar offers to update the login with the new password.
+  await bidi("browsingContext.navigate", { context: tab, url: `${origin}/change`, wait: "complete" });
+  await run(tab, setValues([["#cur", "canary-local-Pw!9"], ["#n1", "canary-changed-Pw!9"], ["#n2", "canary-changed-Pw!9"]]));
+  await clickIn(tab, "#save");
+  const changeBar = await waitFor("the update bar", extPage("bar.html"));
+  results.changeQuestion = await waitFor("its question", async () => run(changeBar.context, `document.querySelector("#question").textContent`));
+  await clickIn(changeBar.context, "button.ghost");
+  await sleep(500);
+
   // The menu under a card field: pick the card.
   await bidi("browsingContext.navigate", { context: tab, url: `${origin}/checkout`, wait: "complete" });
   await clickIn(tab, "#ccnum");
@@ -167,9 +207,7 @@ try {
 
   // Signing up: the bar offers to save the new login; save it.
   await bidi("browsingContext.navigate", { context: tab, url: `${origin}/signup`, wait: "complete" });
-  await run(tab, `(() => { const s = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
-    s.call(document.querySelector("#email"), "new@example.com"); s.call(document.querySelector("#p1"), "canary-signup-Pw!9");
-    s.call(document.querySelector("#p2"), "canary-signup-Pw!9"); })()`);
+  await run(tab, setValues([["#email", "new@example.com"], ["#p1", "canary-signup-Pw!9"], ["#p2", "canary-signup-Pw!9"]]));
   await clickIn(tab, "#go");
   const bar = await waitFor("the save bar", async () => (await contexts()).find((c) => c.url.startsWith(`moz-extension://${UUID}/bar.html`)));
   await waitFor("the bar's question", async () => run(bar.context, `document.querySelector("#question").textContent`));
@@ -198,19 +236,21 @@ try {
     return rows.length ? rows : null;
   });
 
-  // Passkeys: make one (saved on a new login), then sign in with it.
+  // Passkeys, on the card over the page (no window): make one (saved on a new login),
+  // then sign in with it, the only one, after the card's countdown.
   await bidi("browsingContext.navigate", { context: tab, url: `${origin}/webauthn`, wait: "complete" });
-  const confirmAndPick = async () => {
-    const confirm = await waitFor("the passkey window", async () => (await contexts()).find((c) => c.url.startsWith(`moz-extension://${UUID}/confirm.html`)));
-    await waitFor("its choices", async () => run(confirm.context, `document.querySelectorAll("#choices .row").length`));
-    await run(confirm.context, `document.querySelector("#choices .row").click()`);
-  };
   const making = run(tab, `window.makeKey().then(() => "ok", (e) => String(e))`);
-  await confirmAndPick();
+  const makeCard = await waitFor("the passkey card", extPage("passkey.html"));
+  results.passkeyCardInPage = !makeCard.top;
+  await waitFor("its choices", async () => run(makeCard.context, `document.querySelectorAll("#choices .row").length`));
+  await sleep(600);
+  await run(makeCard.context, `document.querySelector("#choices .row").click()`);
   results.makeKey = await making;
   const using = run(tab, `window.useKey().then(() => "ok", (e) => String(e))`);
-  await confirmAndPick();
+  const useCard = await waitFor("the sign-in card", extPage("passkey.html"));
+  results.useCountdown = await waitFor("its countdown", async () => run(useCard.context, `Boolean(document.querySelector(".countdown"))`));
   results.useKey = await using;
+  results.passkeyWindow = (await contexts()).some((c) => c.top && c.url.includes("/passkey.html"));
   results.webauthn = await run(tab, `window.result`);
 } catch (e) {
   failed = String(e?.stack ?? e);
