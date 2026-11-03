@@ -216,7 +216,19 @@ impl Vault {
     /// Answers one opened request. Copies and usernames run without the vault lock held
     /// (the clipboard and alias services take their time).
     async fn answer(&self, pairing: &str, browser: &(i32, String), request: &Value) -> Value {
-        match request["r"].as_str().unwrap_or_default() {
+        let r = request["r"].as_str().unwrap_or_default();
+        // A site that requires user verification gets a real one where Nyx Biometrics is
+        // installed: the person confirms through its prompt (the face, as set up) before
+        // anything is signed, without the vault held. Otherwise an unlocked vault counts,
+        // as in the official clients.
+        if matches!(r, "passkey.get" | "passkey.create")
+            && request["uv"] == "required"
+            && super::sign_in::available()
+            && !super::sign_in::confirm(super::sign_in::Why::Passkey).await
+        {
+            return error(Code::Denied);
+        }
+        match r {
             "save" => save(&mut *self.state.lock().await, pairing, request).await,
             "add_uri" | "signin.save" | "passkey.create" => {
                 super::extension::edit(&mut *self.state.lock().await, pairing, request).await

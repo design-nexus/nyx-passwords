@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Nyx Passwords",
   "description": "Logins, cards, addresses and passkeys from Nyx Passwords, your Vaultwarden vault on this computer.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "browser_specific_settings": {
     "gecko": {
       "id": "nyx-passwords@design-nexus.github.io",
