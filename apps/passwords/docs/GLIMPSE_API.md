@@ -135,7 +135,7 @@ vault, read back on unlock, dropped from memory on lock and removed on sign-out.
 | `ImportPreview` | `(s password, h file) → s` | JSON `{format, items, folders, counts}`; the format is told from the contents. `NeedsPassword` for a protected export without (or with a wrong) password |
 | `Import` | `(s password, h file) → u count` | Adds the items as personal ones (folders made as needed), then syncs |
 | `WifiNetworks` | `() → s` | JSON list of NetworkManager's saved Wi-Fi networks: `uuid`, `name`, `ssid`, `security`, `hidden`, `why_not` (null if importable), `already_saved`. No passwords |
-| `ImportWifi` | `(s uuids) → u count` | JSON list of `uuid`s; saves each importable, not yet saved network as a Wi-Fi network item, its password read by the daemon |
+| `ImportWifi` | `(s uuids) → s` | JSON list of `uuid`s; saves each importable, not yet saved network as a Wi-Fi network item, its password read by the daemon. JSON `{added, failed: [{name, why}]}`: one that fails doesn't stop the rest |
 | `Trash`, `Restore` | `(s id) → ()` | |
 | `TrashItems`, `RestoreItems` | `(s ids) → ()` | `ids`: a JSON list. Every item must allow it, or nothing is done; the vault syncs afterwards |
 | `DeleteForever` | `(s ids) → ()` | Items in the trash only, deleted for good with their attachments; `Denied` otherwise |
@@ -167,7 +167,7 @@ peer: uid, pidfd, executable path). It can do nothing until the user grants it a
 
 | Method | Signature | Notes |
 | --- | --- | --- |
-| `RequestAccess` | `(s scopes, s reason, u minutes) → s` | `scopes`: JSON list of `search` and `copy`; `reason` is shown as the app's words (200 characters at most); `minutes` at most 10080. Waits for the user's answer (up to a minute): JSON `{granted, ask_each_copy, expires}` |
+| `RequestAccess` | `(s scopes, s reason, u minutes) → s` | `scopes`: JSON list of `search` and `copy`; `reason` is shown as the app's words (200 characters at most); `minutes` at most 10080. Waits for the user's answer (up to a minute): JSON `{granted, ask_each_copy, expires}`. After a refusal the same app gets `RateLimited` for a minute |
 | `AccessStatus` | `() → s` | JSON `{search, copy, ask_each_copy, expires}`, or `null` |
 | `AppSearch` | `(s query, u limit) → a(ssssbs)` | With `search`: the same `Item`s Glimpse gets |
 | `AppCopy` | `(s id, s field) → u` | With `copy`: `username`, `password` or `totp` onto the clipboard; returns the seconds until it's cleared. Asks first when the grant says so; `Reprompt` for items that ask for the master password; 10 a minute |

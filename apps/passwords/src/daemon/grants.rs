@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::json;
 use uuid::Uuid;
 
-use super::approvals::{Answer, Question};
+use super::approvals::{Answer, Question, plain};
 use super::peer::Scope;
 use super::vault::{Failure, Result, State, Vault, denied, item, locked, need, parse_id, within};
 
@@ -29,6 +29,8 @@ const GRANTS: &str = "grants";
 const ACTIVITY: &str = "activity";
 /// Events kept in the activity log, newest last.
 const ACTIVITY_KEPT: usize = 500;
+/// After a refusal, how long before the same app may ask again.
+const ASK_AGAIN_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
 /// The longest an app may ask for.
 const MAX_MINUTES: u32 = 7 * 24 * 60;
 const APP_COPIES_PER_MINUTE: usize = 10;
@@ -133,8 +135,11 @@ impl Vault {
         {
             let st = self.state.lock().await;
             st.session.as_ref().ok_or_else(locked)?;
+            if st.access_refused.get(app).is_some_and(|at| at.elapsed() < ASK_AGAIN_AFTER) {
+                return Err(Failure::new(Code::RateLimited, "refused a moment ago; ask again later"));
+            }
         }
-        let reason: String = reason.chars().filter(|c| !c.is_control()).take(REASON_MAX).collect();
+        let reason = plain(reason, REASON_MAX);
         let mut abilities = Vec::new();
         if search {
             abilities.push("find logins by name and site (names, usernames and sites, never passwords)");
@@ -155,10 +160,11 @@ impl Vault {
             session_label: copy.then(|| format!("Allow for {}", duration(minutes))),
         };
         let answer = self.ask(question).await;
-        let st = self.state.lock().await;
+        let mut st = self.state.lock().await;
         let outcome = if answer == Answer::Deny { "denied" } else { "granted" };
         record(&st, app, "asked for access", None, outcome);
         if answer == Answer::Deny {
+            st.access_refused.insert(app.to_string(), Instant::now());
             return Ok(json!({"granted": false}).to_string());
         }
         let t = now();
@@ -249,7 +255,14 @@ impl Vault {
         }
         let (value, settings) = {
             let mut st = self.state.lock().await;
+            // Revoked, or the item changed, while the card was up.
+            grant_for(&st, app).filter(|g| g.copy).ok_or_else(denied)?;
             let session = st.session.as_ref().ok_or_else(locked)?;
+            let entry =
+                session.view.get(id).filter(|e| !e.deleted).ok_or_else(|| Failure::new(Code::NotFound, "no such item"))?;
+            if entry.reprompt && wanted != Field::Username {
+                return Err(Failure::new(Code::Reprompt, "this item asks for the master password: copy it in Passwords"));
+            }
             let value = reveal(&session.keys, &session.snapshot, id, wanted)?;
             st.last_used = Instant::now();
             super::vault::used(&mut st, id);

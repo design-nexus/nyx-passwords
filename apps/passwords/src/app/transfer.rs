@@ -278,16 +278,31 @@ pub fn import_wifi(ui: &Ui) {
                 let uuids = serde_json::to_string(&chosen).unwrap_or_default();
                 match client::call("ImportWifi", Some((uuids.as_str(),).to_variant())).await {
                     Ok(reply) => {
-                        let n = reply.get::<(u32,)>().map_or(0, |(n,)| n);
+                        #[derive(serde::Deserialize, Default)]
+                        struct Failed {
+                            name: String,
+                            why: String,
+                        }
+                        #[derive(serde::Deserialize, Default)]
+                        struct Outcome {
+                            added: u32,
+                            failed: Vec<Failed>,
+                        }
+                        let outcome: Outcome =
+                            reply.get::<(String,)>().and_then(|(json,)| serde_json::from_str(&json).ok()).unwrap_or_default();
                         d.close();
                         ui::reload(&u);
-                        ui::toast(
-                            &u,
-                            &match n {
-                                1 => "Imported 1 Wi-Fi network.".to_string(),
-                                n => format!("Imported {n} Wi-Fi networks."),
-                            },
-                        );
+                        let mut text = match outcome.added {
+                            1 => "Imported 1 Wi-Fi network.".to_string(),
+                            n => format!("Imported {n} Wi-Fi networks."),
+                        };
+                        if let Some(first) = outcome.failed.first() {
+                            text += &match outcome.failed.len() {
+                                1 => format!(" Couldn't import “{}”: {}.", first.name, first.why),
+                                n => format!(" Couldn't import {n}, among them “{}”: {}.", first.name, first.why),
+                            };
+                        }
+                        ui::toast(&u, &text);
                     }
                     Err(e) => {
                         b.set_sensitive(true);

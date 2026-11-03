@@ -19,7 +19,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use uuid::Uuid;
 
-use super::approvals::{Answer, Question};
+use super::approvals::{Answer, Question, plain};
 use super::peer::Scope;
 use super::vault::{Failure, Result, State, Vault, locked, need, parse_id};
 
@@ -55,7 +55,8 @@ fn caller(stream: &UnixStream) -> Option<(PathBuf, String)> {
     }
     let exe = std::fs::read_link(format!("/proc/{}/exe", cred.pid)).unwrap_or_else(|_| PathBuf::from("an unknown program"));
     let raw = std::fs::read(format!("/proc/{}/cmdline", cred.pid)).unwrap_or_default();
-    let mut command: String = String::from_utf8_lossy(&raw).split('\0').filter(|a| !a.is_empty()).collect::<Vec<_>>().join(" ");
+    let words = String::from_utf8_lossy(&raw).split('\0').filter(|a| !a.is_empty()).collect::<Vec<_>>().join(" ");
+    let mut command = plain(&words, usize::MAX);
     if command.chars().count() > 160 {
         command = command.chars().take(160).collect::<String>() + "…";
     }
@@ -165,6 +166,11 @@ impl Vault {
         }
         let signature = {
             let mut st = self.state.lock().await;
+            // Turned off (or the agent, or the item changed) while the card was up.
+            st.settings.refresh();
+            if !offered(&st).iter().any(|k| k.id == key.id && k.blob == key.blob) {
+                return None;
+            }
             let session = st.session.as_ref()?;
             let private = reveal_for_use(&session.keys, &session.snapshot, key.id, sub_field("ssh.privateKey")?).ok()?;
             let signature = ssh::sign(private.expose(), data, flags).ok()?;

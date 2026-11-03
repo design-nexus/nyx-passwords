@@ -107,6 +107,14 @@
 - [x] Grants for other Nyx apps (`daemon/grants.rs`, `Scope::Requester`): `RequestAccess`, `AccessStatus`, `AppSearch`, `AppCopy`; grants and the activity log encrypted with the user key; Settings → App access with revoke and activity; daemon test with a stand-in `nyx-mail`
 - [x] Fixed: SSH key items vanished after a full sync (missing `Bitwarden-Client-Version`)
 - [x] Import saved Wi-Fi networks (`daemon/wifi.rs`): NetworkManager over the system bus; `WifiNetworks` lists names only, `ImportWifi` reads each password in the daemon and saves `wifi` template items; skips open, enterprise, agent-owned and already-saved networks; daemon test `wifi_import` against a stand-in NetworkManager on a private bus
+### Phase 7.4 — validation (the audit's step 6)
+- [x] Security review of Phases 2–5 and the fixes since ([REVIEW.md](REVIEW.md), 2026-11-02): approvals re-checked after the answer, a minute before an app refused may ask again, invisible characters dropped from the card, Wi-Fi import past a failure, a flaky generator test
+- [x] Regression: clippy, `cargo deny`, every test and live test (keyring tests aside)
+- [ ] Bitwarden Android on a device, with the app association check
+- [ ] The web vault: the same items by hand
+- [ ] The extension in Firefox (signed release), Zen, Chromium and Brave; the end-to-end test with `NYX_PW_TEST_FIREFOX`
+
+### Last
 - [ ] Biometrics and security-key unlock, on Nyx Biometrics (last)
 
 ## Phase 4 / 5

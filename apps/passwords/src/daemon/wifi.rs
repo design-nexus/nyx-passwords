@@ -271,8 +271,9 @@ impl Vault {
     }
 
     /// Saves the chosen networks (by NetworkManager uuid) as Wi-Fi items; ones that can't
-    /// be imported or are already saved are left out. Returns how many were added.
-    pub async fn import_wifi(&self, scope: Scope, uuids: &str) -> Result<u32> {
+    /// be imported or are already saved are left out. One that fails doesn't stop the
+    /// rest: JSON `{added, failed: [{name, why}]}`.
+    pub async fn import_wifi(&self, scope: Scope, uuids: &str) -> Result<String> {
         need(scope, Scope::App)?;
         let wanted: Vec<String> =
             serde_json::from_str(uuids).map_err(|_| Failure::new(Code::Failed, "the networks couldn't be read"))?;
@@ -291,25 +292,35 @@ impl Vault {
             .into_iter()
             .filter(|n| wanted.contains(&n.uuid) && n.why_not.is_none() && !saved.contains(&n.ssid))
             .collect();
-        let mut added = 0;
+        let mut added = 0u32;
+        let mut failed = Vec::new();
         for network in &chosen {
-            // Asked for while the vault lock isn't held; dropped once encrypted.
-            let password =
-                secret(&bus, network).await.map_err(|e| Failure::new(Code::Failed, format!("{}: {e}", network.name)))?;
-            let mut st = self.state.lock().await;
-            let st = &mut *st;
-            let (server, refresh) = online(st)?;
-            st.edits += 1;
-            let session = st.session.as_mut().ok_or_else(locked)?;
-            let id = session.create_login(&mut st.store, &server, &refresh, &draft(network, password)).await?;
-            super::grants::record(st, "Passwords", "imported Wi-Fi network", Some(id), "done");
-            st.last_used = Instant::now();
-            added += 1;
+            match self.import_one(&bus, network).await {
+                Ok(()) => added += 1,
+                Err(why) => failed.push(serde_json::json!({"name": network.name, "why": why})),
+            }
         }
         if added > 0 {
             self.state.lock().await.revision += 1;
         }
-        Ok(added)
+        Ok(serde_json::json!({"added": added, "failed": failed}).to_string())
+    }
+
+    async fn import_one(&self, bus: &zbus::Connection, network: &Network) -> std::result::Result<(), String> {
+        // Asked for while the vault lock isn't held; dropped once encrypted.
+        let password = secret(bus, network).await?;
+        let mut st = self.state.lock().await;
+        let st = &mut *st;
+        let (server, refresh) = online(st).map_err(|f| f.message)?;
+        st.edits += 1;
+        let session = st.session.as_mut().ok_or("the vault is locked")?;
+        let id = session
+            .create_login(&mut st.store, &server, &refresh, &draft(network, password))
+            .await
+            .map_err(|e| Failure::from(e).message)?;
+        super::grants::record(st, "Passwords", "imported Wi-Fi network", Some(id), "done");
+        st.last_used = Instant::now();
+        Ok(())
     }
 }
 

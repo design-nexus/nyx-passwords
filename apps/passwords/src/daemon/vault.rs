@@ -136,6 +136,8 @@ pub(super) struct State {
     pub(super) ssh_allowed: std::collections::HashSet<(Uuid, std::path::PathBuf)>,
     /// Copies each app with a grant made in the last minute.
     pub(super) app_copies: std::collections::HashMap<String, VecDeque<Instant>>,
+    /// When each app's last request for access was refused: it can't ask again at once.
+    pub(super) access_refused: std::collections::HashMap<String, Instant>,
     /// Each email alias service's aliases as last listed, and when; dropped on lock.
     pub(super) aliases: std::collections::HashMap<&'static str, (Instant, Vec<nyx_passwords_core::alias::Alias>)>,
 }
@@ -176,6 +178,7 @@ impl Vault {
                 approvals: Default::default(),
                 ssh_allowed: Default::default(),
                 app_copies: Default::default(),
+                access_refused: Default::default(),
             }),
             clipboard: Arc::new(StdMutex::new(Clipboard::default())),
             notifier,

@@ -390,8 +390,9 @@ impl Service {
         Ok(self.vault.wifi_networks(self.scope).await?)
     }
 
-    /// Saves the chosen networks (a JSON list of uuids) as Wi-Fi items; returns how many.
-    async fn import_wifi(&self, uuids: String) -> Result<u32, Error> {
+    /// Saves the chosen networks (a JSON list of uuids) as Wi-Fi items: JSON `{added,
+    /// failed: [{name, why}]}`.
+    async fn import_wifi(&self, uuids: String) -> Result<String, Error> {
         Ok(self.vault.import_wifi(self.scope, &uuids).await?)
     }
 

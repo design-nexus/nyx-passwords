@@ -40,6 +40,18 @@ pub struct Question {
     pub session_label: Option<String>,
 }
 
+/// Text from another program, for the card: no control characters and none of the
+/// invisible ones that reorder or hide what's shown; at most `max` characters.
+pub fn plain(text: &str, max: usize) -> String {
+    text.chars().filter(|&c| !c.is_control() && !invisible(c)).take(max).collect()
+}
+
+fn invisible(c: char) -> bool {
+    matches!(c,
+        '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
+        | '\u{2060}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}')
+}
+
 #[derive(Default)]
 pub struct Approvals {
     next: u64,
@@ -116,5 +128,18 @@ impl Vault {
         let (_, _, reply) = st.approvals.waiting.remove(at);
         let _ = reply.send(answer);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plain_text() {
+        assert_eq!(plain("Fill in \u{202e}moc.liam\u{202c} logins\n", 200), "Fill in moc.liam logins");
+        assert_eq!(plain("a\u{200b}b\u{2066}c\u{feff}", 200), "abc");
+        assert_eq!(plain("ünïcode, 日本語", 200), "ünïcode, 日本語");
+        assert_eq!(plain("abcdef", 3), "abc");
     }
 }

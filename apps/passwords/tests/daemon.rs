@@ -658,20 +658,26 @@ async fn signed_in_vault() {
     }
 }
 
-/// Answers the next approval as the window would, once one is waiting.
-fn answer_next(s: &Scratch, answer: &str) -> Value {
+/// The first approval waiting, once there is one.
+fn next_waiting(s: &Scratch) -> Value {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let app = s.as_peer("nyx-passwords", json!([["Approvals"]]));
         let list: Value = serde_json::from_str(ok(&app[0]).as_str().unwrap()).unwrap();
         if let Some(first) = list.as_array().unwrap().first().cloned() {
-            let app = s.as_peer("nyx-passwords", json!([["Answer", first["id"], answer]]));
-            ok(&app[0]);
             return first;
         }
         assert!(Instant::now() < deadline, "nothing asked for approval");
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// Answers the next approval as the window would, once one is waiting.
+fn answer_next(s: &Scratch, answer: &str) -> Value {
+    let first = next_waiting(s);
+    let app = s.as_peer("nyx-passwords", json!([["Answer", first["id"], answer]]));
+    ok(&app[0]);
+    first
 }
 
 /// Another Nyx app: nothing until it asks and the user allows; then only what was
@@ -742,6 +748,24 @@ fn app_access(s: &Scratch, github: &str) {
         assert!(asked["title"].as_str().unwrap().contains("copy a password"), "{asked}");
         assert_eq!(err(&copying.join().unwrap()[0]), "Denied");
     });
+    // Revoked while the card is up: allowing it then copies nothing.
+    std::thread::scope(|scope| {
+        let copying = scope.spawn(|| s.as_peer("nyx-mail", json!([["AppCopy", github, "password"]])));
+        let waiting = next_waiting(s);
+        let app = s.as_peer("nyx-passwords", json!([["RevokeGrant", "nyx-mail"], ["Answer", waiting["id"], "once"]]));
+        ok(&app[1]);
+        assert_eq!(err(&copying.join().unwrap()[0]), "Denied");
+    });
+    // Refused: the card shows the app's words without invisible characters, and the app
+    // can't ask again at once.
+    std::thread::scope(|scope| {
+        let asking =
+            scope.spawn(|| s.as_peer("nyx-mail", json!([["RequestAccess", "[\"search\"]", "Mail \u{202e}nigol\u{202c}", 60]])));
+        let asked = answer_next(s, "deny");
+        assert!(asked["detail"].as_str().unwrap().contains("Mail nigol"), "{asked}");
+        assert!(ok(&asking.join().unwrap()[0]).as_str().unwrap().contains(r#""granted":false"#));
+    });
+    assert_eq!(err(&s.as_peer("nyx-mail", json!([["RequestAccess", "[\"search\"]", "", 60]]))[0]), "RateLimited");
 
     // The activity log: who, what, which item, the outcome; no values, no names.
     let app = s.as_peer("nyx-passwords", json!([["Activity"]]));
@@ -829,6 +853,14 @@ fn ssh_agent(s: &Scratch, password: &str) {
     assert_eq!(sign_answering(s, &socket, &blob, Some("once"))[0], 14);
     assert_eq!(sign_answering(s, &socket, &blob, Some("deny")), [5]);
     assert_eq!(sign_answering(s, &socket, b"not a key", None), [5]);
+    // Turned off while the card is up: no signature, whatever the answer.
+    let (sock, request) = (socket.clone(), sign_request(&blob));
+    let signing = std::thread::spawn(move || agent_request(&sock, &request));
+    let waiting = next_waiting(s);
+    let app = s.as_peer("nyx-passwords", json!([["SetSshAgentKey", key, false], ["Answer", waiting["id"], "once"]]));
+    ok(&app[1]);
+    assert_eq!(signing.join().unwrap(), [5]);
+    ok(&s.as_peer("nyx-passwords", json!([["SetSshAgentKey", key, true]]))[0]);
     // Until locked: asked once, then not again.
     assert_eq!(sign_answering(s, &socket, &blob, Some("session"))[0], 14);
     assert_eq!(sign_answering(s, &socket, &blob, None)[0], 14);
@@ -1580,6 +1612,8 @@ const SAVED: &[Saved] = &[
     ("802-11-wireless", "Agent", "u4", "AgentNet", false, Some("wpa-psk"), 1, None),
     ("802-3-ethernet", "Wired", "u5", "", false, None, 0, None),
     ("802-11-wireless", "Lab", "u6", "LabNet", true, Some("sae"), 0, Some("canary-lab-Pw!9")),
+    // NetworkManager refuses its password: the others are imported all the same.
+    ("802-11-wireless", "Broken", "u7", "BrokenNet", false, Some("wpa-psk"), 0, None),
 ];
 
 struct NmSettingsObject;
@@ -1718,7 +1752,7 @@ async fn wifi_import() {
     assert!(!listed.contains("canary"), "no passwords in the list");
     let list: Value = serde_json::from_str(&listed).unwrap();
     let by_name = |name: &str| list.as_array().unwrap().iter().find(|n| n["name"] == name).cloned().unwrap();
-    assert_eq!(list.as_array().unwrap().len(), 5, "Wi-Fi only: {list}");
+    assert_eq!(list.as_array().unwrap().len(), 6, "Wi-Fi only: {list}");
     assert!(by_name("Home")["why_not"].is_null());
     assert_eq!(by_name("Lab")["security"], "WPA3");
     assert!(by_name("Cafe")["why_not"].as_str().unwrap().contains("no password"));
@@ -1727,9 +1761,13 @@ async fn wifi_import() {
     let g = s.as_peer("nyx-glimpse", json!([["WifiNetworks"], ["ImportWifi", "[\"u1\"]"]]));
     assert_eq!((err(&g[0]), err(&g[1])), ("Denied", "Denied"));
 
-    // Only importable ones are saved, whatever is asked for; the second time, none.
-    let app = s.as_peer("nyx-passwords", json!([["ImportWifi", "[\"u1\",\"u2\",\"u3\",\"u4\",\"u5\",\"u6\"]"], ["List"]]));
-    assert_eq!(ok(&app[0]), 2);
+    // Only importable ones are saved, whatever is asked for, and one that fails doesn't
+    // stop the rest; the second time, none.
+    let app = s.as_peer("nyx-passwords", json!([["ImportWifi", "[\"u7\",\"u1\",\"u2\",\"u3\",\"u4\",\"u5\",\"u6\"]"], ["List"]]));
+    let outcome: Value = serde_json::from_str(ok(&app[0]).as_str().unwrap()).unwrap();
+    assert_eq!(outcome["added"], 2, "{outcome}");
+    assert_eq!(outcome["failed"].as_array().unwrap().len(), 1, "{outcome}");
+    assert_eq!(outcome["failed"][0]["name"], "Broken");
     let listing: Value = serde_json::from_str(ok(&app[1]).as_str().unwrap()).unwrap();
     let home = listing["entries"].as_array().unwrap().iter().find(|e| e["name"] == "Home").cloned().unwrap();
     assert_eq!((home["username"].as_str(), home["template"].as_str()), (Some("HomeNet"), Some("wifi")));
@@ -1739,7 +1777,7 @@ async fn wifi_import() {
         json!([["Reveal", id, "password"], ["ImportWifi", "[\"u1\",\"u6\"]"], ["WifiNetworks"], ["Activity"]]),
     );
     assert_eq!(ok(&app[0]), "canary-wifi-Pw!9");
-    assert_eq!(ok(&app[1]), 0, "already saved");
+    assert_eq!(serde_json::from_str::<Value>(ok(&app[1]).as_str().unwrap()).unwrap()["added"], 0, "already saved");
     assert!(ok(&app[2]).as_str().unwrap().contains(r#""already_saved":true"#));
     let log = ok(&app[3]).as_str().unwrap();
     assert!(log.contains("imported Wi-Fi network") && !log.contains("canary"));
