@@ -262,6 +262,7 @@ impl Vault {
                 super::extension::edit(&mut *self.state.lock().await, pairing, request).await
             }
             "copy" => self.browser_copy(pairing, request).await,
+            "otp.match" | "otp.take" => self.browser_notified_code(pairing, request).await,
             "icon" => self.browser_icon(request).await,
             "lock" => {
                 self.lock().await;
@@ -315,6 +316,56 @@ impl Vault {
                 json!({"url": format!("data:{kind};base64,{data}")})
             }
             Err(f) => error(f.kind),
+        }
+    }
+
+    /// Verification codes from notifications, held by Nyx Clipboard (`…Clipboard.Otp1`),
+    /// for a one-time-code field: `otp.match` lists the ones that may be for the page
+    /// (no codes), `otp.take` gets one. Clipboard decides which site a code is for and
+    /// gives an unsure one only with `confirmed` (the user picked it in the menu). The
+    /// same rules as `totp`: unlocked, the page's own site, the fill limit.
+    async fn browser_notified_code(&self, pairing: &str, request: &Value) -> Value {
+        let r = request["r"].as_str().unwrap_or_default();
+        let Some(url) = request["url"].as_str().and_then(|u| Url::parse(u).ok()).filter(|u| matches!(u.scheme(), "http" | "https"))
+        else {
+            return error(Code::NoUrl);
+        };
+        if !frame_on_site(request, &url) {
+            return error(Code::Denied);
+        }
+        {
+            let mut st = self.state.lock().await;
+            if st.session.is_none() {
+                return error(Code::Locked);
+            }
+            if r == "otp.take" && !st.browser.fills_left(pairing) {
+                return error(Code::RateLimited);
+            }
+        }
+        let Ok(conn) = clipboard_bus().await else { return json!({"items": []}) };
+        const BUS: &str = "io.github.design_nexus.nyx.Clipboard1";
+        const PATH: &str = "/io/github/design_nexus/nyx/Clipboard1";
+        const IFACE: &str = "io.github.design_nexus.nyx.Clipboard.Otp1";
+        if r == "otp.match" {
+            let reply = conn.call_method(Some(BUS), PATH, Some(IFACE), "Match", &(url.as_str(),)).await;
+            let items = reply
+                .ok()
+                .and_then(|m| m.body().deserialize::<String>().ok())
+                .and_then(|t| serde_json::from_str::<Vec<Value>>(&t).ok())
+                .unwrap_or_default();
+            let items: Vec<Value> = items
+                .into_iter()
+                .take(5)
+                .map(|c| json!({"id": c["id"], "app": c["app"], "confidence": c["confidence"], "expires": c["expires"]}))
+                .collect();
+            return json!({"items": items});
+        }
+        let id = request["id"].as_str().unwrap_or_default();
+        let confirmed = request["confirmed"] == true;
+        let reply = conn.call_method(Some(BUS), PATH, Some(IFACE), "Take", &(id, url.as_str(), confirmed)).await;
+        match reply.ok().and_then(|m| m.body().deserialize::<String>().ok()).and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
+            Some(v) if v["code"].is_string() => json!({"code": v["code"], "confidence": v["confidence"]}),
+            _ => error(Code::NotFound),
         }
     }
 
@@ -412,6 +463,23 @@ impl Vault {
         st.browser.pending.retain(|p| p.id != id);
         st.browser.active.remove(id);
         st.store.remove_pairing(id).map_err(|e| Failure::new(Code::Failed, e.to_string()))
+    }
+}
+
+/// The session bus, for Nyx Clipboard's codes (opened once).
+async fn clipboard_bus() -> zbus::Result<zbus::Connection> {
+    static BUS: tokio::sync::OnceCell<zbus::Connection> = tokio::sync::OnceCell::const_new();
+    BUS.get_or_try_init(zbus::Connection::session).await.cloned()
+}
+
+/// A request from a frame on another site than the page gets nothing.
+fn frame_on_site(request: &Value, url: &Url) -> bool {
+    match request["frame"].as_str().filter(|f| !f.is_empty()) {
+        None => true,
+        Some(frame) => Url::parse(frame).ok().is_some_and(|f| {
+            matches!(f.scheme(), "http" | "https")
+                && f.host_str().zip(url.host_str()).is_some_and(|(a, b)| matching::base_domain(a) == matching::base_domain(b))
+        }),
     }
 }
 

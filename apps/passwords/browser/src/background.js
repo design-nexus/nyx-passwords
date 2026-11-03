@@ -353,7 +353,9 @@ async function menuItems(entry) {
     return { state: "unlocked", field: entry.field, items: found.items ?? [] };
   }
   const found = await request({ r: "match", url: tab.url });
-  return { state: "unlocked", field: entry.field, host: new URL(tab.url).host, items: found.items ?? [] };
+  // A code field also gets the codes that arrived in notifications (held by Nyx Clipboard).
+  const notified = entry.field === "otp" ? await request({ r: "otp.match", url: tab.url, frame: entry.frameUrl }).catch(() => ({})) : {};
+  return { state: "unlocked", field: entry.field, host: new URL(tab.url).host, items: found.items ?? [], notified: notified.items ?? [] };
 }
 
 async function menuAct(entry, message) {
@@ -364,6 +366,12 @@ async function menuAct(entry, message) {
       return fill(tab, message.id, target);
     case "menu.code": {
       const answer = await request({ r: "totp", url: tab.url, id: message.id, frame: entry.frameUrl });
+      if (!answer.code) return answer;
+      return { filled: await inFrame(tab.id, entry.frameId, fillCode, [originOf(entry.frameUrl), answer.code]) };
+    }
+    case "menu.notified": {
+      // Picking an unsure code in the menu is the user's confirmation that it's for this site.
+      const answer = await request({ r: "otp.take", url: tab.url, id: message.id, frame: entry.frameUrl, confirmed: message.confirmed === true });
       if (!answer.code) return answer;
       return { filled: await inFrame(tab.id, entry.frameId, fillCode, [originOf(entry.frameUrl), answer.code]) };
     }

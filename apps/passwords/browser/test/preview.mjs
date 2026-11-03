@@ -59,7 +59,14 @@ const answers = {
   generate: (m) => ({ password: m.rules?.kind === "passphrase" ? "Orbit-Velvet-Canyon-Mosaic-Ember7" : "q7#Lm2vX!rT9pW4@zK8n" }),
   username: () => ({ username: "brisk.otter42" }),
   settings: () => ({ fillOnLoad: true, inlineMenu: true, copyTotp: true, rememberSignIn: true, passkeys: false, app: { fill_on_load: true, passkeys: true } }),
-  "menu.items": () => ({ state: "unlocked", field: params.get("field") ?? "login", host: "github.com", items: params.get("field") === "card" ? [{ id: "vi", name: "Visa", sub: "Visa •••• 4242" }] : site }),
+  "menu.items": () => ({
+    state: "unlocked", field: params.get("field") ?? "login", host: "github.com",
+    items: params.get("field") === "card" ? [{ id: "vi", name: "Visa", sub: "Visa •••• 4242" }] : site,
+    notified: params.get("field") === "otp" ? [
+      { id: "c1", app: "Thunderbird", confidence: "high", expires: Date.now() / 1000 + 154 },
+      { id: "c2", app: "Messages", confidence: "low", expires: Date.now() / 1000 + 71 },
+    ] : [],
+  }),
   "bar.state": () => ({ question: params.get("q") ?? "new", host: "github.com", username: "ken@design-nexus.dev", provider: "google" }),
   "confirm.state": () => ({ ask: params.get("ask") ?? "get", host: "github.com", rpId: "github.com", user: "ken", choices: [{ id: "gh", name: "GitHub", user_name: "ken@design-nexus.dev" }, { id: "gh2", name: "GitHub (work)", user_name: "kparker-dn" }] }),
   pair: () => ({ state: "pending", code: "482913" }),
@@ -152,6 +159,7 @@ const shots = [
   ["7b-popup-ssh-key", "/popup.html?view=ssh", 760, 560],
   ["8-page-menu-and-bar", "/page", 1000, 420],
   ["9-passkey", "/confirm.html?ask=get#t", 420, 460],
+  ["10-menu-codes", "/menu.html?field=otp#t", 360, 300],
 ];
 for (const [name, path, width, height] of shots) {
   await bidi("browsingContext.setViewport", { context, viewport: { width, height } });

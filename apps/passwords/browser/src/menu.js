@@ -57,10 +57,23 @@ async function show() {
       for (const i of items) row(tile({ kind: state.field, name: i.name }, 28), i.name, i.sub, () => ask("menu.form", { id: i.id }));
       if (!items.length) note(state.field === "card" ? "No cards saved in Passwords." : "No identities saved in Passwords.");
       break;
-    case "otp":
+    case "otp": {
+      // Codes from notifications first (newest), then the vault's own one-time codes.
+      const notified = state.notified ?? [];
+      for (const c of notified) {
+        const left = Math.max(0, Math.round(c.expires - Date.now() / 1000));
+        const when = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")} left`;
+        if (c.confidence === "high") {
+          row(kindTile("clock"), `Code from ${c.app}`, `From a notification · ${when}`, () => ask("menu.notified", { id: c.id }));
+        } else {
+          row(kindTile("clock"), `Code from ${c.app}?`, "Not sure it's for this site · pick to fill", () => ask("menu.notified", { id: c.id, confirmed: true }));
+        }
+      }
+      if (notified.length && items.some((i) => i.has_totp)) list.append(el("div", { class: "sep" }));
       for (const i of items.filter((i) => i.has_totp)) row(kindTile("clock"), `Code for ${i.name}`, i.username, () => ask("menu.code", { id: i.id }));
-      if (!items.some((i) => i.has_totp)) note("No login for this site has a one-time code.");
+      if (!notified.length && !items.some((i) => i.has_totp)) note("No login for this site has a one-time code, and no code has arrived in a notification.");
       break;
+    }
     case "new-password":
       row(kindTile("wand"), "Generate a password", "Into this form's new password fields", () => ask("menu.generate"));
       if (items.length) list.append(el("div", { class: "sep" }));
