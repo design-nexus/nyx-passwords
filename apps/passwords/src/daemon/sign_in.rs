@@ -75,9 +75,9 @@ impl Why {
 }
 
 async fn broker(why: Why) -> zbus::Result<nyx_auth_proto::Reply> {
-    use nyx_auth_proto::{AuthProxy, Request, Surface};
+    use nyx_auth_proto::{Request, Surface};
     let conn = zbus::Connection::session().await?;
-    AuthProxy::new(&conn)
+    nyx_auth_proto::connect(&conn)
         .await?
         .authenticate(Request {
             action: why.action().into(),
