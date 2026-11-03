@@ -24,8 +24,9 @@ broker (`sign_in.rs`), and what Passwords relies on in Nyx Biometrics.
   doesn't check where it's installed, as the broker does (`~/.local/bin`, `/usr/bin`,
   `/usr/local/bin`). Any program running as the user can therefore ask for the sealed
   vault key under that name and get it once the prompt passes, which with hands-free
-  face may be just the user being in view. Recorded in SECURITY.md until the key
-  service checks the place.
+  face may be just the user being in view. Fixed in
+  [nyx-biometrics#11](https://github.com/design-nexus/nyx-biometrics/pull/11), which
+  checks the place as the broker does; recorded in SECURITY.md until it's installed.
 - **Not built:** unlocking with a security key (FIDO2 `hmac-secret`) and with a
   fingerprint need hardware that isn't here.
 

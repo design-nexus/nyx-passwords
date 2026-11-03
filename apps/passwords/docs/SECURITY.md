@@ -102,7 +102,9 @@ answered by whatever the computer is set up with) and says yes or no.
   - The key service hands the key to a program by its name, `nyx-passwordsd`, and
     doesn't yet check where it's installed (the broker does). Until it does, any
     program running as the user could ask for the sealed key under that name and get
-    it when the prompt passes. Tracked in Nyx Biometrics.
+    it when the prompt passes. Fixed in Nyx Biometrics
+    ([nyx-biometrics#11](https://github.com/design-nexus/nyx-biometrics/pull/11)); this
+    holds until that key service is installed.
 
 ### Where the daemon connects
 
