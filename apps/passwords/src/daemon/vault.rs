@@ -312,28 +312,21 @@ impl Vault {
         if scope != Scope::Glimpse || field == Field::Username {
             return Ok(false);
         }
-        let item = {
+        {
             let mut st = self.state.lock().await;
             allow_finder(scope, &mut st)?;
             if !st.settings.refresh().glimpse_protected {
                 return Ok(false);
             }
             let session = st.session.as_ref().ok_or_else(locked)?;
-            match session.view.get(id).filter(|e| e.reprompt) {
-                Some(e) => e.name.expose().to_string(),
-                None => return Ok(false),
+            if !session.view.get(id).is_some_and(|e| e.reprompt) {
+                return Ok(false);
             }
-        };
+        }
         if !super::sign_in::available() {
             return Ok(false);
         }
-        let what = match field {
-            Field::Password => "password",
-            Field::Totp => "one-time code",
-            _ => "field",
-        };
-        let what = what.to_string();
-        let confirmed = tokio::task::spawn_blocking(move || super::sign_in::confirm(&what, &item)).await.unwrap_or(false);
+        let confirmed = tokio::task::spawn_blocking(super::sign_in::confirm).await.unwrap_or(false);
         if !confirmed {
             let st = self.state.lock().await;
             super::grants::record(&st, "Glimpse", "copy a protected item", Some(id), "not confirmed");
