@@ -76,7 +76,7 @@
 - [x] Extension, the best of Bitwarden's and 1Password's: a menu under login, sign-up, one-time-code, card and address fields; filling as the page loads (setting in both places, per-login opt-out); save and update bar with a never-save list; popup search of the whole vault (fill after a warning, then offer to add the address); copy through the daemon's clipboard; one-time code ring; generator with options and usernames; security tags; universal sign-on ("Sign in with Google" remembered and clicked for you); passkeys (opt-in); badge, shortcuts, context menu, a welcome page
 - [x] Extension design (0.4.0): a 1Password-style popup (search, suggestions for the page, filters, the item beside the list with Autofill and click-to-copy fields, generator, settings) and redrawn menu, save bar and passkey window, in the Nyx 2.0 look and Passwords' own theme (`settings` carries it; `nyx.js` applies it); site icons when the app's icon setting is on. `browser/test/preview.mjs` photographs every view with made-up items
 - [x] Headless Firefox test (`firefox_extension`, WebDriver BiDi): pairing, fill on load, card menu, save bar, universal sign-on, passkey made and used; `web-ext lint` in CI
-- [x] Firefox add-on signing: 0.3.0 signed unlisted on AMO (`web-ext sign --channel unlisted`)
+- [x] Firefox add-on signing: unlisted on AMO (`web-ext sign --channel unlisted`); 0.3.0, 0.4.0, and 0.5.0 on 2026-11-02
 - Live tests: `tests/edit.rs` `folders_fields_history_and_many_items` (with `bw`), `tests/live.rs` (hub, equivalent domains), `tests/daemon.rs` scopes and `live_sync`
 
 ## Phase 7 — completion pass ([AUDIT.md](AUDIT.md), 2026-11-01)
@@ -116,7 +116,9 @@
 - [x] Extension 0.5.0: SSH keys show their public key and fingerprint (copyable), "Open in Passwords" goes to the item, Unlock brings up Passwords' unlock window while locked (one unsealed frame naming a stored pairing, every 5 s at most), an outline toolbar icon for Firefox's light and dark themes
 
 ### Last
-- [ ] Biometrics and security-key unlock, on Nyx Biometrics (last)
+- [x] Face unlock on Nyx Biometrics (TPM-sealed key from `nyx-auth-keyd`, face first); protected items in Glimpse and passkey user verification through the broker; reviewed 2026-11-03 ([REVIEW.md](REVIEW.md))
+- [ ] Security-key unlock (FIDO2 `hmac-secret`) and fingerprint unlock: need a key and a reader
+- [ ] The key service checks where `nyx-passwordsd` is installed, not just its name (Nyx Biometrics)
 
 ## Phase 4 / 5
 See PLAN.md.

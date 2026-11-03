@@ -4,6 +4,31 @@ Each review reads [SECURITY.md](SECURITY.md) and checks the code against it, rul
 rule, then looks at what changed since the last one. Findings are fixed in the same
 change, with a test where one can catch it.
 
+## 2026-11-03: Nyx Biometrics in Passwords
+
+Covers unlocking with the face (`face_unlock.rs`), confirming through the sign-in
+broker (`sign_in.rs`), and what Passwords relies on in Nyx Biometrics.
+
+- **Holds:** turning face unlock on needs the master password confirmed and the
+  prompt; each unlock goes through the key service's prompt; nothing that unlocks is
+  kept in the session; a key that no longer fits is cleared, as is everything on sign
+  out; only the window and Glimpse (when turned on) may start it.
+- **Holds:** a face unlock doesn't set "master password confirmed" (`st.confirmed` is
+  set only by `VerifyPassword`), so exports, Travel Mode off, turning on keyring or
+  face unlock, and protected items still need the master password.
+- **Holds:** the broker is trusted only when its bus name belongs to the installed
+  `nyx-authd`; otherwise polkit is asked directly. Daemon tests use a debug-only
+  stand-in for the person.
+- **Finding, in Nyx Biometrics:** the key service (`nyx-auth-keyd`) checks only the
+  calling program's file name (`nyx-passwordsd`) and accepts a replaced one; it
+  doesn't check where it's installed, as the broker does (`~/.local/bin`, `/usr/bin`,
+  `/usr/local/bin`). Any program running as the user can therefore ask for the sealed
+  vault key under that name and get it once the prompt passes, which with hands-free
+  face may be just the user being in view. Recorded in SECURITY.md until the key
+  service checks the place.
+- **Not built:** unlocking with a security key (FIDO2 `hmac-secret`) and with a
+  fingerprint need hardware that isn't here.
+
 ## 2026-11-02: validation, after the completion pass
 
 Covers what Phases 2 to 5 added and the fixes since: the SSH agent, the approval card,
