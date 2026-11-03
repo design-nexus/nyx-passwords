@@ -104,7 +104,10 @@ requests to sign in from Passwords.
 The installer builds the extension into `~/.local/share/nyx-passwords/browser`, for
 Firefox and Zen (`nyx-passwords-firefox.xpi`) and for Chromium, Chrome and Brave
 (load `chromium/` unpacked), and sets up the native host that links it to the running
-app. Until the Firefox build is signed, release Firefox loads it only for the session
+app. Release Firefox installs only a build Mozilla has signed:
+`scripts/sign-extension.sh` makes one and keeps it in `browser/signed/`
+(`nyx-passwords-<version>-signed.xpi`), which installs leave alone; install it from
+Add-ons → Install Add-on From File. An unsigned build loads only for the session
 (`about:debugging` → This Firefox → Load Temporary Add-on). Pair it once by comparing a code with the one Passwords
 shows. The vault stays in Passwords; the extension asks for one thing at a time.
 
