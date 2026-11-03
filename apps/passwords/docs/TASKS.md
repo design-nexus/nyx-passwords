@@ -97,7 +97,7 @@
 - [x] Assistant: `passwords.generate` (onto the clipboard, never returned), `passwords.security_summary` (counts only, `SecuritySummary`), `passwords.open` (`nyx-passwords --item ID`); all `Secrets` in assistant-policy (key press every call); voice routes in `abilities/passwords`; daemon test
 - [x] Nyx Settings page: Browsers (fill on load, passkeys), Email aliases (the username generator's service and its settings; tokens stay in the window, never in a command line), Templates (names); buttons open the window at the right place
 - [x] Glimpse: `pw aliases` opens Email aliases; bare `pw` suggests from the recent list, which now includes items opened in the window
-- [ ] Bump Glimpse's `nyx-passwords-proto` pin once these commits are on GitHub (nothing Glimpse uses changed)
+- [x] Bump Glimpse's `nyx-passwords-proto` pin (now 271eac9; nothing Glimpse uses changed)
 
 ### Phase 7.3 — advanced security
 - [x] Security report: `http://` addresses (not for home networks), duplicates (site and username), incomplete records (templates without addresses excepted), missing two-step login from 2fa.directory's list (downloaded whole, on request); verified vs advice; fixes from the item view (`editor::Fix`); live test `security_report_checks`
