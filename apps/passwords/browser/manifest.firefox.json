@@ -26,21 +26,9 @@
     "default_popup": "popup.html",
     "default_title": "Nyx Passwords",
     "default_icon": {
-      "16": "toolbar-dark.svg",
-      "32": "toolbar-dark.svg"
-    },
-    "theme_icons": [
-      {
-        "light": "toolbar-light.svg",
-        "dark": "toolbar-dark.svg",
-        "size": 16
-      },
-      {
-        "light": "toolbar-light.svg",
-        "dark": "toolbar-dark.svg",
-        "size": 32
-      }
-    ]
+      "16": "toolbar.svg",
+      "32": "toolbar.svg"
+    }
   },
   "permissions": [
     "nativeMessaging",
