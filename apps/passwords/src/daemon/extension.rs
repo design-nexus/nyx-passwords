@@ -193,6 +193,17 @@ pub(super) fn read(st: &mut State, pairing: &str, request: &Value) -> Value {
             v["has_password"] = e.has_password.into();
             v["editable"] = e.editable.into();
             v["sign_in_with"] = custom(session, e.id, SIGN_IN_WITH).into();
+            // An SSH key's public half and fingerprint, which aren't secret; the private
+            // key stays in the daemon.
+            if e.kind == Kind::SshKey && !e.reprompt {
+                let public = |name| {
+                    nyx_passwords_core::vault::sub_field(name)
+                        .and_then(|f| reveal_for_use(&session.keys, &session.snapshot, e.id, f).ok())
+                        .map(|v| v.expose().to_string())
+                };
+                v["ssh_public_key"] = public("ssh.publicKey").into();
+                v["ssh_fingerprint"] = public("ssh.keyFingerprint").into();
+            }
             v
         }
         "cards" | "identities" => {

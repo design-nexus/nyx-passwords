@@ -130,8 +130,8 @@ async function refresh() {
     case "locked":
       return showState(
         el("h1", {}, "Passwords is locked"),
-        el("p", {}, "Unlock it in the app to fill logins, codes and cards here."),
-        el("div", { class: "buttons" }, el("button", { class: "primary", onclick: () => ask({ cmd: "unlock" }).then(() => window.close()) }, icon("lock"), "Unlock in Passwords")),
+        el("p", {}, "Unlock to fill logins, codes and cards here. Passwords asks in its own window."),
+        el("div", { class: "buttons" }, el("button", { class: "primary", onclick: unlock }, icon("lock"), "Unlock")),
       );
     case "unlocked":
       return openVault();
@@ -142,6 +142,31 @@ async function refresh() {
         el("div", { class: "buttons" }, el("button", { class: "primary", onclick: refresh }, "Try again")),
       );
   }
+}
+
+/// Shows Passwords' unlock window (the face first, where Nyx Biometrics is set up) and
+/// waits here until the vault is open.
+async function unlock() {
+  const r = await ask({ cmd: "unlock" });
+  if (r.state === "unlocked") return refresh();
+  if (r.state !== "shown") {
+    return showState(
+      el("h1", {}, "Couldn't show Passwords"),
+      el("p", {}, r.error === "busy" ? "It was asked a moment ago: look for its window." : "Is Passwords running? Try again."),
+      el("div", { class: "buttons" }, el("button", { onclick: refresh }, "Back")),
+    );
+  }
+  showState(
+    el("h1", {}, "Unlock in Passwords"),
+    el("p", {}, "Passwords shows its unlock window. Once the vault is open, this fills in."),
+    el("div", { class: "buttons dim" }, el("span", { class: "spinner" }), "Waiting for Passwords…"),
+  );
+  stateTimers.push(
+    setInterval(async () => {
+      const s = await ask({ cmd: "status" });
+      if (s.state === "unlocked") refresh();
+    }, 1500),
+  );
 }
 
 async function startPairing() {
@@ -406,13 +431,20 @@ function itemView(item, { confirmFill = false } = {}) {
     if (item.has_totp) fields.append(totpField(item, Boolean(here)));
     if (item.has_passkey) fields.append(field({ label: "passkey", value: el("span", {}, "Saved in Passwords"), actions: [] }));
     if (item.sign_in_with) fields.append(field({ label: "signs in with", value: PROVIDERS[item.sign_in_with] ?? item.sign_in_with }));
+  } else if (kind === "ssh") {
+    const copyText = (text, what) => navigator.clipboard.writeText(text).then(() => toast(`${what} copied`));
+    if (item.ssh_public_key) fields.append(field({ label: "public key", value: item.ssh_public_key, cls: "mono wrap", title: "Click to copy", onclick: () => copyText(item.ssh_public_key, "Public key"), actions: [copyButton("Copy the public key", () => copyText(item.ssh_public_key, "Public key"))] }));
+    if (item.ssh_fingerprint) fields.append(field({ label: "fingerprint", value: item.ssh_fingerprint, cls: "mono", title: "Click to copy", onclick: () => copyText(item.ssh_fingerprint, "Fingerprint"), actions: [copyButton("Copy the fingerprint", () => copyText(item.ssh_fingerprint, "Fingerprint"))] }));
   } else if (item.sub) {
     fields.append(field({ label: kind === "card" ? "card" : "name", value: item.sub }));
   }
   if (fields.childElementCount) parts.push(fields);
 
-  if (kind === "note" || kind === "ssh" || kind === "other") {
-    parts.push(el("div", { class: "banner info" }, icon(kind === "ssh" ? "ssh" : "note"), el("div", {}, el("div", {}, `${KINDS[kind]}s stay in the app: open Passwords to read or copy them.`), el("div", { class: "buttons" }, el("button", { onclick: () => ask({ cmd: "unlock" }) }, "Open Passwords")))));
+  const openInApp = el("div", { class: "buttons" }, el("button", { onclick: () => ask({ cmd: "open", id: item.id }).then(() => window.close()) }, icon("external", 15), "Open in Passwords"));
+  if (kind === "ssh") {
+    parts.push(el("div", { class: "banner info" }, icon("ssh"), el("div", {}, el("div", {}, "The private key stays in Passwords: ssh and git sign with it through Passwords' SSH agent."), openInApp)));
+  } else if (kind === "note" || kind === "other") {
+    parts.push(el("div", { class: "banner info" }, icon("note"), el("div", {}, el("div", {}, `${KINDS[kind]}s stay in the app: open Passwords to read or copy them.`), openInApp)));
   } else if (kind === "card" || kind === "identity") {
     parts.push(el("div", { class: "dim", style: "padding: 0 4px 12px; line-height: 1.45" }, kind === "card" ? "Fills a checkout form on https pages. The menu in a card field offers it too." : "Fills an address or sign-up form. The menu in its fields offers it too."));
   }

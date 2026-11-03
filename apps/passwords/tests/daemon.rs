@@ -1063,6 +1063,9 @@ fn browser() {
         for request in requests {
             let frame = if request["replay"] == true {
                 last.clone().unwrap()
+            } else if request["unlock_window"] == true {
+                // The one frame that isn't sealed: the pairing key is locked with the vault.
+                json!({"t": "unlock", "p": id})
             } else {
                 // Steps of two, so `behind` has an unused counter below the last one.
                 counter += 2;
@@ -1341,11 +1344,32 @@ async fn paired_browser() {
         assert_ne!(reply["t"], "msg");
     }
 
-    // Locked: the extension learns only that.
+    // An SSH key: its public half and fingerprint, never the private key; and it can be
+    // shown in the Passwords window, as can only items that exist.
+    let app = s.as_peer("nyx-passwords", json!([["GenerateSshKey"]]));
+    let made: Value = serde_json::from_str(ok(&app[0]).as_str().unwrap()).unwrap();
+    let draft = json!({"kind": "ssh", "name": "Deploy key", "fields": {"ssh.privateKey": made["private"]}}).to_string();
+    let key = ok(&s.as_peer("nyx-passwords", json!([["CreateItem", draft]]))[0]).as_str().unwrap().to_string();
+    let r = s.as_browser(
+        &json!([{"r": "item", "id": key}, {"r": "open", "id": key}, {"r": "open", "id": uuid::Uuid::new_v4()}]).to_string(),
+    );
+    assert_eq!(
+        (r[0]["ssh_public_key"].as_str(), r[0]["ssh_fingerprint"].as_str()),
+        (made["public"].as_str(), made["fingerprint"].as_str())
+    );
+    assert!(!r[0].to_string().contains("PRIVATE KEY"));
+    assert_eq!((r[1].clone(), r[2]["error"].as_str()), (json!({}), Some("NotFound")));
+
+    // Locked: the extension learns only that, and may have the unlock window shown, not
+    // again at once.
+    let r = s.as_browser(r#"[{"unlock_window":true}]"#);
+    assert_eq!(r[0]["t"], "unlocked", "nothing to show while open");
     let app = s.as_peer("nyx-passwords", json!([["Lock"]]));
     assert!(app[0].get("ok").is_some());
-    let r = s.as_browser(r#"[{"r":"status"}]"#);
+    let r = s.as_browser(r#"[{"r":"status"},{"unlock_window":true},{"unlock_window":true}]"#);
     assert_eq!(r[0]["t"], "locked");
+    assert_eq!(r[1]["t"], "shown");
+    assert_eq!((r[2]["t"].as_str(), r[2]["error"].as_str()), (Some("error"), Some("busy")));
 
     // After unlocking, the stored pairing works again; removing it ends it.
     let app = s.as_peer("nyx-passwords", json!([["Unlock", password], ["RemovePairing", id]]));

@@ -43,10 +43,11 @@ const vault = [
   { id: "vi", name: "Visa", kind: "card", sub: "Visa •••• 4242", username: "", host: null },
   { id: "id", name: "Home", kind: "identity", sub: "Ken Parker", username: "", host: null },
   { id: "wi", name: "Wi-Fi at home", kind: "note", sub: "", username: "", host: null },
-  { id: "ss", name: "Hetzner box", kind: "ssh", sub: "", username: "", host: null },
+  { id: "ss", name: "Hetzner box", kind: "ssh", sub: "", username: "", host: null,
+    ssh_public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHk3vQ8pZ0xYb2mN4tR7sW1cK9dF6gJ5hL2eA8uV3qXo", ssh_fingerprint: "SHA256:Qm4b7Zc1Xr9TfV2nK8sLp0hW6yJ3dG5uE1aO7iN4tB" },
 ];
 const answers = {
-  status: () => ({ state: view.startsWith("state-") ? view.slice(6) : "unlocked" }),
+  status: () => ({ state: view.startsWith("state-") ? view.slice(6).replace("-asked", "") : "unlocked" }),
   match: () => ({ host: "github.com", items: site }),
   search: (m) => ({ items: vault.filter((i) => !m.q || i.name.toLowerCase().includes(m.q.toLowerCase()) || (i.sub ?? "").toLowerCase().includes(m.q.toLowerCase())) }),
   security: () => ({ items: [{ id: "gh2", weak: false, reused: true, old: true }] }),
@@ -62,6 +63,7 @@ const answers = {
   "bar.state": () => ({ question: params.get("q") ?? "new", host: "github.com", username: "ken@design-nexus.dev", provider: "google" }),
   "confirm.state": () => ({ ask: params.get("ask") ?? "get", host: "github.com", rpId: "github.com", user: "ken", choices: [{ id: "gh", name: "GitHub", user_name: "ken@design-nexus.dev" }, { id: "gh2", name: "GitHub (work)", user_name: "kparker-dn" }] }),
   pair: () => ({ state: "pending", code: "482913" }),
+  unlock: () => ({ state: "shown" }),
 };
 globalThis.browser = {
   runtime: { sendMessage: async (m) => (answers[m.cmd] ?? (() => ({})))(m), id: "preview" },
@@ -75,6 +77,8 @@ addEventListener("load", () => setTimeout(() => {
   if (view === "card") { const s = document.getElementById("search"); s.value = "visa"; s.dispatchEvent(new Event("input")); setTimeout(() => document.querySelector(".row")?.click(), 300); }
   if (view === "other") document.querySelector('.row[data-id="gh2"]')?.click();
   if (view === "pending") document.querySelector("button.primary")?.click();
+  if (view === "state-locked-asked") document.querySelector("button.primary")?.click();
+  if (view === "ssh") { const s = document.getElementById("search"); s.value = "hetzner box"; s.dispatchEvent(new Event("input")); setTimeout(() => document.querySelector('.row[data-id="ss"]')?.click(), 300); }
 }, 400));
 }`;
 
@@ -143,7 +147,9 @@ const shots = [
   ["4-popup-generator", "/popup.html?view=generator", 760, 560],
   ["5-popup-settings", "/popup.html?view=settings", 760, 560],
   ["6-popup-locked", "/popup.html?view=state-locked", 760, 560],
+  ["6b-popup-unlocking", "/popup.html?view=state-locked-asked", 760, 560],
   ["7-popup-pairing", "/popup.html?view=state-unpaired", 760, 560],
+  ["7b-popup-ssh-key", "/popup.html?view=ssh", 760, 560],
   ["8-page-menu-and-bar", "/page", 1000, 420],
   ["9-passkey", "/confirm.html?ask=get#t", 420, 460],
 ];
