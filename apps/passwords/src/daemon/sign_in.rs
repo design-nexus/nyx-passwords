@@ -11,11 +11,18 @@
 use std::process::{Command, Stdio};
 
 const ACTION: &str = "io.github.design_nexus.nyx.auth.app-action";
-const ACTIONS: &str = "/usr/share/polkit-1/actions/io.github.design_nexus.nyx.auth.unlock.policy";
-const PKCHECK: &str = "/usr/bin/pkcheck";
+const ACTIONS: &str = "share/polkit-1/actions/io.github.design_nexus.nyx.auth.unlock.policy";
+const PKCHECK: &str = "bin/pkcheck";
+
+/// The system's own copy of a file: under /usr, or the system profile on NixOS. Both
+/// belong to root; PATH isn't searched.
+fn system_file(relative: &str) -> Option<std::path::PathBuf> {
+    ["/usr", "/run/current-system/sw"].iter().map(|prefix| std::path::Path::new(prefix).join(relative)).find(|p| p.exists())
+}
 
 pub fn available() -> bool {
-    test_answer().is_some() || std::fs::read_to_string(ACTIONS).is_ok_and(|t| t.contains(ACTION))
+    test_answer().is_some()
+        || system_file(ACTIONS).and_then(|p| std::fs::read_to_string(p).ok()).is_some_and(|t| t.contains(ACTION))
 }
 
 /// Debug builds only: the daemon tests answer for the person with a file ("yes" or "no")
@@ -91,8 +98,8 @@ async fn broker(why: Why) -> zbus::Result<nyx_auth_proto::Reply> {
 /// Polkit lets only root pass a message of its own, so the dialog shows the action's
 /// ("Confirm it's you to allow this").
 fn polkit() -> bool {
-    let Some(subject) = subject() else { return false };
-    Command::new(PKCHECK)
+    let (Some(subject), Some(pkcheck)) = (subject(), system_file(PKCHECK)) else { return false };
+    Command::new(pkcheck)
         .args(["--action-id", ACTION, "--process", &subject, "--allow-user-interaction"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())

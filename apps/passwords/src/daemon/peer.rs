@@ -83,7 +83,7 @@ pub fn identify(fd: RawFd, allowed_dir: &Path) -> Option<Peer> {
     if pidfd_pid(&pidfd)? != before {
         return None;
     }
-    let app = exe.file_name()?.to_str()?.to_string();
+    let app = nyx_peer::program(&exe, allowed_dir)?;
     Some(Peer { pid: before, scope, app, browser })
 }
 
@@ -98,13 +98,12 @@ fn browser_parent(pid: i32) -> Option<(i32, String)> {
     BROWSERS.iter().find(|(n, _)| *n == name).map(|(_, b)| (ppid, b.to_string()))
 }
 
-/// The scope for an executable path: one of `PEERS`, in `allowed_dir`. A binary that
-/// was replaced while running shows as "… (deleted)" and is refused.
+/// The scope for an executable path: one of `PEERS`, in `allowed_dir` or a folder the
+/// system trusts (see `nyx_peer`). A binary that was replaced while running shows as
+/// "… (deleted)" and is refused.
 pub fn scope_of(exe: &Path, allowed_dir: &Path) -> Option<Scope> {
-    if exe.parent()? != allowed_dir {
-        return None;
-    }
-    let name = exe.file_name()?.to_str()?;
+    let name = nyx_peer::program(exe, allowed_dir)?;
+    let name = name.as_str();
     if let Some((_, scope)) = PEERS.iter().find(|(n, _)| *n == name) {
         return Some(*scope);
     }
@@ -169,6 +168,14 @@ mod tests {
         assert_eq!(scope_of(Path::new("/tmp/nyx-passwords"), dir), None);
         assert_eq!(scope_of(Path::new("/home/u/.local/bin/nyx-glimpse (deleted)"), dir), None);
         assert_eq!(scope_of(Path::new("/usr/bin/python3"), dir), None);
+    }
+
+    #[test]
+    fn nix_wrapped_programs_keep_their_scope() {
+        let dir = Path::new("/nix/store/abc-nyx-passwords/bin");
+        assert_eq!(scope_of(&dir.join(".nyx-passwords-bridge-wrapped"), dir), Some(Scope::Browser));
+        assert_eq!(scope_of(&dir.join(".nyx-passwords-settings-wrapped"), dir), Some(Scope::Settings));
+        assert_eq!(scope_of(&dir.join(".nyx-passwords-other-wrapped"), dir), None);
     }
 
     #[test]
