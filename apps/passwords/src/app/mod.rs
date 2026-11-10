@@ -5,6 +5,7 @@ mod aliases;
 pub mod approve;
 mod attachments;
 mod client;
+pub mod control;
 mod data;
 mod detail;
 mod editor;

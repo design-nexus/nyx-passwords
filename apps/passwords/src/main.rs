@@ -25,7 +25,24 @@ fn main() -> glib::ExitCode {
         glib::set_prgname(Some(test.as_str()));
     }
     let id = std::env::var("NYX_PASSWORDS_APP_ID").unwrap_or_else(|_| "io.github.design_nexus.nyx.Passwords".into());
-    let app = gtk::Application::builder().application_id(id).flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE).build();
+    nyx_core::control::describe_if_asked(&app::control::description(&id));
+    // D-Bus starts Passwords with --gapplication-service for a call from nyx, Glimpse or
+    // Nyx Assistant (status, lock): no window, and it quits once idle. GLib won't parse
+    // the flag for apps that handle their own command line.
+    let mut args = args;
+    let service = args.iter().any(|a| a == "--gapplication-service");
+    args.retain(|a| a != "--gapplication-service");
+    let mut flags = gio::ApplicationFlags::HANDLES_COMMAND_LINE;
+    if service {
+        flags |= gio::ApplicationFlags::IS_SERVICE;
+    }
+    let app = gtk::Application::builder().application_id(id).flags(flags).build();
+    app.connect_startup(move |app| {
+        app::control::serve(app);
+        if service {
+            app.set_inactivity_timeout(10_000);
+        }
+    });
     app.connect_command_line(|app, cl| {
         let argv: Vec<String> = cl.arguments().iter().map(|s| s.to_string_lossy().into_owned()).collect();
         let section = argv.iter().position(|s| s == "--section").and_then(|i| argv.get(i + 1)).cloned();
@@ -44,5 +61,5 @@ fn main() -> glib::ExitCode {
         glib::ExitCode::SUCCESS
     });
     app.connect_shutdown(|_| app::prefs::flush());
-    app.run()
+    app.run_with_args(&args)
 }
