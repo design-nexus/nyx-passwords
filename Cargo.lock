@@ -1165,7 +1165,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1556,7 +1556,7 @@ dependencies = [
  "gobject-sys",
  "libc",
  "system-deps",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2545,9 +2545,9 @@ dependencies = [
 [[package]]
 name = "nyx-auth-core"
 version = "0.1.0"
-source = "git+https://github.com/design-nexus/nyx-biometrics.git?rev=1fe62af00a6489570951334f5e2393a6a52cf41b#1fe62af00a6489570951334f5e2393a6a52cf41b"
+source = "git+https://github.com/design-nexus/nyx-biometrics.git?rev=e80e74da936a77c0ddedc2e25d7020f7ab2f1636#e80e74da936a77c0ddedc2e25d7020f7ab2f1636"
 dependencies = [
- "nyx-peer 0.1.0 (git+https://github.com/design-nexus/nyx-core.git?rev=918729504918ec344b3a853a5ce0ea2c9dbb7b5f)",
+ "nyx-peer",
  "serde",
  "thiserror",
  "toml 0.9.12+spec-1.1.0",
@@ -2557,7 +2557,7 @@ dependencies = [
 [[package]]
 name = "nyx-auth-proto"
 version = "0.1.0"
-source = "git+https://github.com/design-nexus/nyx-biometrics.git?rev=1fe62af00a6489570951334f5e2393a6a52cf41b#1fe62af00a6489570951334f5e2393a6a52cf41b"
+source = "git+https://github.com/design-nexus/nyx-biometrics.git?rev=e80e74da936a77c0ddedc2e25d7020f7ab2f1636#e80e74da936a77c0ddedc2e25d7020f7ab2f1636"
 dependencies = [
  "libc",
  "nyx-auth-core",
@@ -2585,7 +2585,7 @@ dependencies = [
  "anyhow",
  "gtk4",
  "nyx-actions",
- "nyx-peer 0.1.0 (git+https://github.com/design-nexus/nyx-core.git?rev=918729504918ec344b3a853a5ce0ea2c9dbb7b5f)",
+ "nyx-peer",
  "serde",
  "serde_json",
  "toml 1.1.6+spec-1.1.0",
@@ -2622,7 +2622,7 @@ dependencies = [
  "nyx-core",
  "nyx-passwords-core",
  "nyx-passwords-proto",
- "nyx-peer 0.1.0 (git+https://github.com/design-nexus/nyx-core.git?rev=918729504918ec344b3a853a5ce0ea2c9dbb7b5f)",
+ "nyx-peer",
  "nyx-theme",
  "nyx-ui",
  "rand",
@@ -2687,7 +2687,6 @@ version = "0.1.0"
 dependencies = [
  "gio",
 ]
-
 
 [[package]]
 name = "nyx-peer"
@@ -2770,7 +2769,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3145,7 +3144,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3457,7 +3456,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3516,7 +3515,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4044,10 +4043,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4738,7 +4737,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
