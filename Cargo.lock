@@ -2547,7 +2547,7 @@ name = "nyx-auth-core"
 version = "0.1.0"
 source = "git+https://github.com/design-nexus/nyx-biometrics.git?rev=1fe62af00a6489570951334f5e2393a6a52cf41b#1fe62af00a6489570951334f5e2393a6a52cf41b"
 dependencies = [
- "nyx-peer 0.1.0 (git+https://github.com/design-nexus/nyx-core.git?rev=4f05fb8fc92ec211f4e0f0b722fdf29a083c9e89)",
+ "nyx-peer 0.1.0 (git+https://github.com/design-nexus/nyx-core.git?rev=918729504918ec344b3a853a5ce0ea2c9dbb7b5f)",
  "serde",
  "thiserror",
  "toml 0.9.12+spec-1.1.0",
@@ -2688,10 +2688,6 @@ dependencies = [
  "gio",
 ]
 
-[[package]]
-name = "nyx-peer"
-version = "0.1.0"
-source = "git+https://github.com/design-nexus/nyx-core.git?rev=4f05fb8fc92ec211f4e0f0b722fdf29a083c9e89#4f05fb8fc92ec211f4e0f0b722fdf29a083c9e89"
 
 [[package]]
 name = "nyx-peer"
