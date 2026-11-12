@@ -1165,7 +1165,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1556,7 +1556,7 @@ dependencies = [
  "gobject-sys",
  "libc",
  "system-deps",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2535,7 +2535,7 @@ dependencies = [
 [[package]]
 name = "nyx-actions"
 version = "0.1.0"
-source = "git+https://github.com/design-nexus/nyx-core.git?rev=918729504918ec344b3a853a5ce0ea2c9dbb7b5f#918729504918ec344b3a853a5ce0ea2c9dbb7b5f"
+source = "git+https://github.com/design-nexus/nyx-core.git?rev=32f0c5e154fc44c763b8ecd80d35a3b298723afa#32f0c5e154fc44c763b8ecd80d35a3b298723afa"
 dependencies = [
  "jsonschema",
  "serde",
@@ -2545,7 +2545,7 @@ dependencies = [
 [[package]]
 name = "nyx-auth-core"
 version = "0.1.0"
-source = "git+https://github.com/design-nexus/nyx-biometrics.git?rev=e80e74da936a77c0ddedc2e25d7020f7ab2f1636#e80e74da936a77c0ddedc2e25d7020f7ab2f1636"
+source = "git+https://github.com/design-nexus/nyx-biometrics.git?rev=ceb41b26602e2548da18a1ab408e81efe8c8a279#ceb41b26602e2548da18a1ab408e81efe8c8a279"
 dependencies = [
  "nyx-peer",
  "serde",
@@ -2557,7 +2557,7 @@ dependencies = [
 [[package]]
 name = "nyx-auth-proto"
 version = "0.1.0"
-source = "git+https://github.com/design-nexus/nyx-biometrics.git?rev=e80e74da936a77c0ddedc2e25d7020f7ab2f1636#e80e74da936a77c0ddedc2e25d7020f7ab2f1636"
+source = "git+https://github.com/design-nexus/nyx-biometrics.git?rev=ceb41b26602e2548da18a1ab408e81efe8c8a279#ceb41b26602e2548da18a1ab408e81efe8c8a279"
 dependencies = [
  "libc",
  "nyx-auth-core",
@@ -2580,7 +2580,7 @@ dependencies = [
 [[package]]
 name = "nyx-core"
 version = "0.1.0"
-source = "git+https://github.com/design-nexus/nyx-core.git?rev=918729504918ec344b3a853a5ce0ea2c9dbb7b5f#918729504918ec344b3a853a5ce0ea2c9dbb7b5f"
+source = "git+https://github.com/design-nexus/nyx-core.git?rev=32f0c5e154fc44c763b8ecd80d35a3b298723afa#32f0c5e154fc44c763b8ecd80d35a3b298723afa"
 dependencies = [
  "anyhow",
  "gtk4",
@@ -2594,7 +2594,7 @@ dependencies = [
 [[package]]
 name = "nyx-desktop"
 version = "0.1.0"
-source = "git+https://github.com/design-nexus/nyx-core.git?rev=918729504918ec344b3a853a5ce0ea2c9dbb7b5f#918729504918ec344b3a853a5ce0ea2c9dbb7b5f"
+source = "git+https://github.com/design-nexus/nyx-core.git?rev=32f0c5e154fc44c763b8ecd80d35a3b298723afa#32f0c5e154fc44c763b8ecd80d35a3b298723afa"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -2691,7 +2691,7 @@ dependencies = [
 [[package]]
 name = "nyx-peer"
 version = "0.1.0"
-source = "git+https://github.com/design-nexus/nyx-core.git?rev=918729504918ec344b3a853a5ce0ea2c9dbb7b5f#918729504918ec344b3a853a5ce0ea2c9dbb7b5f"
+source = "git+https://github.com/design-nexus/nyx-core.git?rev=32f0c5e154fc44c763b8ecd80d35a3b298723afa#32f0c5e154fc44c763b8ecd80d35a3b298723afa"
 
 [[package]]
 name = "nyx-shell-proto"
@@ -2706,7 +2706,7 @@ dependencies = [
 [[package]]
 name = "nyx-theme"
 version = "0.1.0"
-source = "git+https://github.com/design-nexus/nyx-design.git?rev=8454ac9e6e10a22872b079be0893cf41406c4d11#8454ac9e6e10a22872b079be0893cf41406c4d11"
+source = "git+https://github.com/design-nexus/nyx-design.git?rev=4f8e16d6ae3dbc2a14091271e3b6bb29902c0df4#4f8e16d6ae3dbc2a14091271e3b6bb29902c0df4"
 dependencies = [
  "gtk4",
  "nyx-core",
@@ -2717,7 +2717,7 @@ dependencies = [
 [[package]]
 name = "nyx-theme-core"
 version = "0.2.0"
-source = "git+https://github.com/design-nexus/nyx-design.git?rev=8454ac9e6e10a22872b079be0893cf41406c4d11#8454ac9e6e10a22872b079be0893cf41406c4d11"
+source = "git+https://github.com/design-nexus/nyx-design.git?rev=4f8e16d6ae3dbc2a14091271e3b6bb29902c0df4#4f8e16d6ae3dbc2a14091271e3b6bb29902c0df4"
 dependencies = [
  "nyx-config",
  "nyx-core",
@@ -2729,7 +2729,7 @@ dependencies = [
 [[package]]
 name = "nyx-ui"
 version = "0.1.0"
-source = "git+https://github.com/design-nexus/nyx-design.git?rev=8454ac9e6e10a22872b079be0893cf41406c4d11#8454ac9e6e10a22872b079be0893cf41406c4d11"
+source = "git+https://github.com/design-nexus/nyx-design.git?rev=4f8e16d6ae3dbc2a14091271e3b6bb29902c0df4#4f8e16d6ae3dbc2a14091271e3b6bb29902c0df4"
 dependencies = [
  "gtk4",
  "nyx-core",
@@ -2769,7 +2769,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3144,7 +3144,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3456,7 +3456,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3515,7 +3515,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4043,10 +4043,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4737,7 +4737,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
