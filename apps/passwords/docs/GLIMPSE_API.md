@@ -23,7 +23,7 @@ name), is disconnected before any method runs.
 | Executable | Scope |
 | --- | --- |
 | `~/.local/bin/nyx-passwords` | `app`: everything below plus `Reveal`, edits, login, unlock, settings |
-| `~/.local/bin/nyx-glimpse` | `glimpse`: `Status`, `Search`, `Suggest`, `Copy`, `OpenUrl`, `Generate`, `Lock` |
+| `~/.local/bin/nyx-glimpse`, `~/.local/bin/nyx-glimpse-backend` (the Quickshell panel's search) | `glimpse`: `Status`, `Search`, `Suggest`, `Copy`, `OpenUrl`, `Generate`, `Lock` |
 | `~/.local/bin/nyx-passwords-settings` | `settings`: `Status`, `Lock`, `Sync` |
 | `~/.local/bin/nyx-passwords-bridge` | `browser`: per-origin calls in [NATIVE_MESSAGING.md](NATIVE_MESSAGING.md) |
 | `~/.local/bin/nyx-passwords-assistant` | `assistant`: `Status`, `Search`, `Copy` (username, password, code), `Generate`, `SecuritySummary`. Off until `assistant = true` |

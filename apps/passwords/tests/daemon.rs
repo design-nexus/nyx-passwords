@@ -44,7 +44,7 @@ impl Scratch {
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::copy(env!("CARGO_BIN_EXE_nyx-passwordsd"), bin.join("nyx-passwordsd")).unwrap();
         let me = std::env::current_exe().unwrap();
-        for name in ["nyx-passwords", "nyx-glimpse", "nyx-mail", "stranger", "firefox"] {
+        for name in ["nyx-passwords", "nyx-glimpse", "nyx-glimpse-backend", "nyx-mail", "stranger", "firefox"] {
             std::fs::copy(&me, bin.join(name)).unwrap();
         }
         std::fs::copy(env!("CARGO_BIN_EXE_nyx-passwords-bridge"), bin.join("nyx-passwords-bridge")).unwrap();
@@ -362,14 +362,21 @@ fn strangers_and_scopes() {
     assert_eq!(err(&g[2]), "Denied");
     let mail = s.as_peer("nyx-mail", json!([["FaceUnlock"], ["UnlockWithFace"]]));
     assert_eq!((err(&mail[0]), err(&mail[1])), ("Denied", "Denied"));
+
+    // Glimpse's backend (the Quickshell panel's search) is Glimpse; another app isn't.
+    let backend = s.as_peer("nyx-glimpse-backend", json!([["Search", "x", 5], ["List"]]));
+    assert_eq!((err(&backend[0]), err(&backend[1])), ("Locked", "Denied"));
+    assert_eq!(err(&s.as_peer("nyx-mail", json!([["Search", "x", 5]]))[0]), "Denied");
 }
 
 #[test]
 fn glimpse_switched_off() {
     let s = Scratch::start("glimpse = false\n");
-    let g = s.as_peer("nyx-glimpse", json!([["Search", "x", 5], ["Generate"], ["Lock"], ["FaceUnlock"], ["UnlockWithFace"]]));
-    for r in &g {
-        assert_eq!(err(r), "Denied", "{r}");
+    for role in ["nyx-glimpse", "nyx-glimpse-backend"] {
+        let g = s.as_peer(role, json!([["Search", "x", 5], ["Generate"], ["Lock"], ["FaceUnlock"], ["UnlockWithFace"]]));
+        for r in &g {
+            assert_eq!(err(r), "Denied", "{role}: {r}");
+        }
     }
 }
 

@@ -32,6 +32,7 @@ pub enum Scope {
 const PEERS: &[(&str, Scope)] = &[
     ("nyx-passwords", Scope::App),
     ("nyx-glimpse", Scope::Glimpse),
+    ("nyx-glimpse-backend", Scope::Glimpse),
     ("nyx-passwords-settings", Scope::Settings),
     ("nyx-passwords-bridge", Scope::Browser),
     ("nyx-passwords-assistant", Scope::Assistant),
@@ -156,6 +157,7 @@ mod tests {
         let dir = Path::new("/home/u/.local/bin");
         assert_eq!(scope_of(&dir.join("nyx-passwords"), dir), Some(Scope::App));
         assert_eq!(scope_of(&dir.join("nyx-glimpse"), dir), Some(Scope::Glimpse));
+        assert_eq!(scope_of(&dir.join("nyx-glimpse-backend"), dir), Some(Scope::Glimpse));
         assert_eq!(scope_of(&dir.join("nyx-passwords-assistant"), dir), Some(Scope::Assistant));
         assert_eq!(scope_of(&dir.join("nyx-passwords-settings"), dir), Some(Scope::Settings));
         assert_eq!(scope_of(&dir.join("nyx-passwords-bridge"), dir), Some(Scope::Browser));
@@ -175,6 +177,7 @@ mod tests {
         let dir = Path::new("/nix/store/abc-nyx-passwords/bin");
         assert_eq!(scope_of(&dir.join(".nyx-passwords-bridge-wrapped"), dir), Some(Scope::Browser));
         assert_eq!(scope_of(&dir.join(".nyx-passwords-settings-wrapped"), dir), Some(Scope::Settings));
+        assert_eq!(scope_of(&dir.join(".nyx-glimpse-backend-wrapped"), dir), Some(Scope::Glimpse));
         assert_eq!(scope_of(&dir.join(".nyx-passwords-other-wrapped"), dir), None);
     }
 
