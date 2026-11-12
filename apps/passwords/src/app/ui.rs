@@ -27,6 +27,8 @@ pub struct State {
     pub account: gtk::Box,
     pub list: gtk::ListBox,
     list_scroll: gtk::ScrolledWindow,
+    /// The line between the list and the details, while both show.
+    pane_line: gtk::Separator,
     pub details: gtk::Box,
     detail_scroll: gtk::ScrolledWindow,
     pub search: gtk::SearchEntry,
@@ -84,9 +86,6 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> Ui {
     window.set_icon_name(Some("io.github.design_nexus.nyx.Passwords"));
     window.set_titlebar(Some(&w::hbox(0)));
     chrome::set_title(&window, "Passwords", "");
-    let overlay = gtk::Overlay::new();
-    let frame = w::vbox(0);
-    frame.add_css_class("window-frame");
 
     // The app and the section, the sidebar toggle; search in the middle; the item count
     // and sync, lock, new item and Settings at the end.
@@ -138,13 +137,6 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> Ui {
     new.set_visible(false);
     header.end.append(&new);
     header.end.append(&chrome::settings_button(open_settings));
-    frame.append(&header.root);
-
-    let body = w::hbox(0);
-    body.set_vexpand(true);
-    frame.append(&body);
-    overlay.set_child(Some(&frame));
-    window.set_child(Some(&overlay));
 
     let sidebar = w::vbox(0);
     sidebar.set_hexpand(false); // Required: expanding labels must not expand the sidebar.
@@ -159,12 +151,14 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> Ui {
         .child(&nav)
         .build();
     sidebar.append(&nav_scroll);
-    body.append(&sidebar);
 
     let content = w::vbox(0);
     content.add_css_class("settings-content");
     content.set_hexpand(true); // Only the page column receives spare horizontal space.
-    body.append(&content);
+    let frame = nyx_ui::frame::AppFrame::new(&header.root);
+    frame.set_sidebar(&sidebar);
+    frame.set_page(&content);
+    let overlay = frame.install(&window);
     let update_bar = w::vbox(0);
     update_bar.set_visible(false);
     content.append(&update_bar);
@@ -196,6 +190,8 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> Ui {
         .build();
     list_scroll.set_width_request(300);
     panes.append(&list_scroll);
+    let pane_line = nyx_ui::frame::pane_line(gtk::Orientation::Vertical);
+    panes.append(&pane_line);
     let details = w::vbox(12);
     details.add_css_class("item-details");
     let detail_scroll = gtk::ScrolledWindow::builder()
@@ -230,6 +226,7 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> Ui {
         account,
         list,
         list_scroll,
+        pane_line,
         details,
         detail_scroll,
         search,
@@ -988,6 +985,7 @@ pub fn layout(ui: &Ui) {
     ui.list_scroll.set_hexpand(narrow || empty);
     ui.list_scroll.set_visible(empty || !narrow || !ui.showing_detail.get());
     ui.detail_scroll.set_visible(!empty && (!narrow || ui.showing_detail.get()));
+    ui.pane_line.set_visible(ui.list_scroll.is_visible() && ui.detail_scroll.is_visible());
     if let Some(back) = ui.details.first_child() {
         back.set_visible(narrow);
     }
