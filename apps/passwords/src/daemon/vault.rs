@@ -1234,16 +1234,19 @@ impl Vault {
         Ok(())
     }
 
-    /// The security report as JSON `[{id, reused, weak, age_days}]`: logins with a
-    /// reused, weak or old password. Worked out here, in memory.
+    /// The security report as JSON `[{id, reused, same_as, weak, age_days}]`: logins
+    /// with a reused, weak or old password, and which others share it. Worked out here,
+    /// in memory.
     pub async fn report(&self, scope: Scope) -> Result<String> {
         need(scope, Scope::App)?;
         let mut st = self.state.lock().await;
         let st = &mut *st;
         let session = st.session.as_ref().ok_or_else(locked)?;
         let found = audit::audit(&session.keys, &session.snapshot, SystemTime::now(), &mut st.strength);
-        let list: Vec<_> =
-            found.iter().map(|f| json!({"id": f.id, "reused": f.reused, "weak": f.weak, "age_days": f.age_days})).collect();
+        let list: Vec<_> = found
+            .iter()
+            .map(|f| json!({"id": f.id, "reused": f.reused, "same_as": f.same_as, "weak": f.weak, "age_days": f.age_days}))
+            .collect();
         Ok(serde_json::Value::Array(list).to_string())
     }
 

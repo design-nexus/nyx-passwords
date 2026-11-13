@@ -286,57 +286,13 @@ fn show_agent(ui: &Ui, e: &Entry, into: &gtk::Box) {
 /// What the security report says about this item, each with what fixes it. A breach is
 /// a fact; the rest is advice, and says so.
 fn show_issues(ui: &Ui, e: &Entry) {
-    use super::security::Issue;
     let issues = ui.security.borrow().issues(e);
     if issues.is_empty() {
         return;
     }
     let rows = group(ui, "Security");
-    let can_edit = e.editable && editor::KINDS.contains(&e.kind.as_str());
     for issue in issues {
-        let actions = w::hbox(4);
-        let button = |label: &str, tip: &str| {
-            let b = gtk::Button::with_label(label);
-            b.set_tooltip_text(Some(tip));
-            b.set_valign(gtk::Align::Center);
-            actions.append(&b);
-            b
-        };
-        let (u, entry) = (ui.clone(), e.clone());
-        match &issue {
-            Issue::Exposed(_) | Issue::Reused(_) | Issue::Weak | Issue::Old(_) if can_edit && e.view_password => {
-                button("Change…", "Generate a new password in the editor; change it on the site too")
-                    .connect_clicked(move |_| editor::open_fix(&u, entry.clone(), editor::Fix::NewPassword));
-            }
-            Issue::NoTwoFactor(docs) => {
-                if let Some(docs) = docs.clone() {
-                    button("How to", "The site's page about turning on two-step login").connect_clicked(move |_| {
-                        let _ = gtk::gio::AppInfo::launch_default_for_uri(&docs, None::<&gtk::gio::AppLaunchContext>);
-                    });
-                }
-                if can_edit {
-                    let (u, entry) = (ui.clone(), e.clone());
-                    button("Add code…", "Save the site's one-time code key here once you've turned it on")
-                        .connect_clicked(move |_| editor::open_fix(&u, entry.clone(), editor::Fix::TotpKey));
-                }
-            }
-            Issue::InsecureAddress if can_edit => {
-                button("Use https…", "Change its http:// addresses to https:// in the editor")
-                    .connect_clicked(move |_| editor::open_fix(&u, entry.clone(), editor::Fix::Https));
-            }
-            Issue::Duplicate(others) => {
-                let others = others.clone();
-                button("Show", "Pick this login and the others, to compare or move them").connect_clicked(move |_| {
-                    let mut ids = vec![entry.id.clone()];
-                    ids.extend(others.iter().cloned());
-                    ui::show_several(&u, ids);
-                });
-            }
-            Issue::Missing(_) if can_edit => {
-                button("Edit…", "Fill it in").connect_clicked(move |_| editor::open(&u, Some(entry.clone())));
-            }
-            _ => {}
-        }
+        let actions = super::security::fix_buttons(ui, e, &issue);
         let kind = if issue.verified() { "Verified" } else { "Advice" };
         rows.append(&w::row(&issue.text(), kind, Some(actions.upcast_ref())));
     }

@@ -125,7 +125,7 @@ vault, read back on unlock, dropped from memory on lock and removed on sign-out.
 | `ReadSshKey` | `(s private) → s` | JSON `{public, fingerprint}` for an OpenSSH private key; fails for a key with a passphrase ("this key has a passphrase") |
 | `OpenSshKey` | `(s private, s passphrase) → s` | JSON `{private, public, fingerprint}`: the key opened with its passphrase, `private` without it (as items keep keys) |
 | `SecuritySummary` | `() → s` | JSON `{logins, weak, reused, old, flagged}`: the report as counts only. Also for the Assistant |
-| `Report` | `() → s` | JSON `[{id, reused, weak, age_days}]`: logins with a password used by others, weak (zxcvbn below 3), or unchanged for over a year (`age_days` then set). Worked out in memory |
+| `Report` | `() → s` | JSON `[{id, reused, same_as, weak, age_days}]`: logins with a password used by others (`same_as`: their ids), weak (zxcvbn below 3), or unchanged for over a year (`age_days` then set). Worked out in memory |
 | `CheckBreaches` | `() → s` | JSON `[{id, count}]`: logins whose password is in Have I Been Pwned's breach data. Sends only 5-character SHA-1 prefixes; the app asks the user first |
 | `Attachments` | `(s id) → s` | JSON `[{id, name, size}]`; `size` is the server's, of the encrypted file |
 | `SaveAttachment` | `(s id, s attachment, h file) → t written` | `file` is a handle to the file the user chose, opened by the app; the daemon decrypts into it. Items that ask for the master password need it first (`Reprompt`) |

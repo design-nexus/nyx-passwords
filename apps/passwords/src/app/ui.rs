@@ -1,5 +1,6 @@
-//! The window: the shared header, then the sidebar, item list and details while the
-//! vault is open; the sign-in or unlock page otherwise (Nyx Design 2.0, STYLE.md).
+//! The window: the shared header, then the sidebar and Home, the Security page or the
+//! item list and details while the vault is open; the sign-in or unlock page otherwise
+//! (Nyx Design 2.0, STYLE.md).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -10,7 +11,7 @@ use nyx_passwords_proto::state;
 use nyx_ui::{chrome, widgets as w};
 
 use super::data::{self, Listing};
-use super::{account, client, detail, editor, prefs, security, settings, theme};
+use super::{account, client, detail, editor, home, prefs, security, settings, theme};
 
 pub type Ui = Rc<State>;
 
@@ -22,9 +23,14 @@ pub struct State {
     collapse: gtk::Button,
     new_button: gtk::Button,
     sidebar: gtk::Box,
-    /// "account" (sign in, unlock) or "vault".
+    /// "account" (sign in, unlock), "home", "security" or "vault" (the list and details).
     pages: gtk::Stack,
     pub account: gtk::Box,
+    pub home: gtk::Box,
+    /// Whether Home was last built for a narrow window.
+    home_narrow: Cell<Option<bool>>,
+    pub security_list: gtk::Box,
+    pub security_scroll: gtk::ScrolledWindow,
     pub list: gtk::ListBox,
     list_scroll: gtk::ScrolledWindow,
     /// The line between the list and the details, while both show.
@@ -32,7 +38,6 @@ pub struct State {
     pub details: gtk::Box,
     detail_scroll: gtk::ScrolledWindow,
     pub search: gtk::SearchEntry,
-    status: gtk::Label,
     lock_button: gtk::Button,
     sync_button: gtk::Button,
     toast_box: gtk::Box,
@@ -54,9 +59,8 @@ pub struct State {
     pub editor: RefCell<Option<editor::Sheet>>,
     /// Bumped whenever details are rebuilt, so timers from older ones stop.
     pub detail_serial: Cell<u64>,
-    /// The security report (`security.rs`), and its header action.
+    /// The security report (`security.rs`).
     pub security: RefCell<security::Report>,
-    security_bar: gtk::Box,
     /// The Trash section's "Empty the trash".
     trash_bar: gtk::Box,
     /// The daemon's `Revision` when the listing was last fetched.
@@ -87,24 +91,29 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> Ui {
     window.set_titlebar(Some(&w::hbox(0)));
     chrome::set_title(&window, "Passwords", "");
 
-    // The app and the section, the sidebar toggle; search in the middle; the item count
-    // and sync, lock, new item and Settings at the end.
+    // The app and the section, the sidebar toggle; search in the middle; sync, lock, New
+    // item and Settings at the end.
     let header = chrome::app_header(&window, "nyx-key-symbolic", "Passwords");
     let collapse = w::bar_button("sidebar-show-symbolic", "Collapse the sidebar (Ctrl+B)");
     header.start.append(&collapse);
     let search = gtk::SearchEntry::new();
-    search.set_placeholder_text(Some("Search the vault (Ctrl+F)"));
+    search.set_placeholder_text(Some("Search the vault"));
+    search.update_property(&[gtk::accessible::Property::Label("Search the vault")]);
     search.add_css_class("bar-search");
     // A small minimum keeps the header narrow enough for a half-screen tile.
     search.set_width_chars(8);
     search.set_max_width_chars(SEARCH_WIDE);
-    header.center.append(&search);
+    let search_box = gtk::Overlay::new();
+    search_box.set_child(Some(&search));
+    let hint = w::label("Ctrl F", "key-hint");
+    hint.set_halign(gtk::Align::End);
+    hint.set_valign(gtk::Align::Center);
+    hint.set_margin_end(10);
+    hint.set_can_target(false);
+    search_box.add_overlay(&hint);
+    search.connect_changed(move |s| hint.set_visible(s.text().is_empty()));
+    header.center.append(&search_box);
     header.end.set_spacing(4);
-    let status = w::label("", "header-status");
-    status.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    status.set_max_width_chars(26);
-    status.set_margin_end(4);
-    header.end.append(&status);
     let sync_button = w::bar_button("view-refresh-symbolic", "Sync now (F5)");
     sync_button.connect_clicked(|_| {
         if let Some(ui) = current() {
@@ -112,9 +121,6 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> Ui {
         }
     });
     sync_button.set_visible(false);
-    // The Security section's breach check, filled in once the state exists.
-    let security_bar = w::hbox(0);
-    header.end.append(&security_bar);
     let trash_bar = w::hbox(0);
     let empty_trash = w::bar_button("user-trash-full-symbolic", "Empty the trash: delete everything in it for good");
     empty_trash.connect_clicked(|_| {
@@ -133,7 +139,15 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> Ui {
     });
     lock_button.set_visible(false);
     header.end.append(&lock_button);
-    let new = w::bar_button("list-add-symbolic", "New item (Ctrl+N)");
+    let new = gtk::Button::new();
+    new.add_css_class("new-button");
+    new.set_tooltip_text(Some("New item (Ctrl+N)"));
+    let face = w::hbox(6);
+    face.append(&gtk::Image::from_icon_name("list-add-symbolic"));
+    face.append(&gtk::Label::new(Some("New item")));
+    face.append(&w::label("Ctrl N", "key-hint"));
+    new.set_child(Some(&face));
+    new.set_valign(gtk::Align::Center);
     new.set_visible(false);
     header.end.append(&new);
     header.end.append(&chrome::settings_button(open_settings));
@@ -205,6 +219,17 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> Ui {
     panes.append(&detail_scroll);
     pages.add_named(&vault, Some("vault"));
 
+    let home = w::vbox(0);
+    home.add_css_class("home-page");
+    pages.add_named(&scroll(&nyx_ui::clamp::Clamp::new(&home, 900)), Some("home"));
+
+    let security_page = security::bar();
+    let security_list = w::vbox(0);
+    security_list.add_css_class("security-list");
+    let security_scroll = scroll(&nyx_ui::clamp::Clamp::new(&security_list, 820));
+    security_page.append(&security_scroll);
+    pages.add_named(&security_page, Some("security"));
+
     let toast_box = w::hbox(10);
     toast_box.add_css_class("toast");
     toast_box.set_halign(gtk::Align::Center);
@@ -213,7 +238,7 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> Ui {
     toast_box.set_visible(false);
     overlay.add_overlay(&toast_box);
 
-    let start = section.map(str::to_string).unwrap_or_else(|| nyx_theme::start_page("all", &prefs::get().last_section));
+    let start = section.map(str::to_string).unwrap_or_else(|| nyx_theme::start_page("home", &prefs::get().last_section));
     let ui = Rc::new(State {
         window,
         overlay,
@@ -224,13 +249,16 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> Ui {
         sidebar,
         pages,
         account,
+        home,
+        home_narrow: Cell::new(None),
+        security_list,
+        security_scroll,
         list,
         list_scroll,
         pane_line,
         details,
         detail_scroll,
         search,
-        status,
         lock_button,
         sync_button,
         toast_box,
@@ -249,11 +277,9 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> Ui {
         editor: RefCell::new(None),
         detail_serial: Cell::new(0),
         security: RefCell::new(security::Report::default()),
-        security_bar,
         trash_bar,
         revision: Cell::new(0),
     });
-    ui.security_bar.append(&security::toolbar(&ui));
     UI.with(|u| *u.borrow_mut() = Some(ui.clone()));
 
     let u = ui.clone();
@@ -264,7 +290,13 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> Ui {
         layout(&u);
     });
     let u = ui.clone();
-    ui.search.connect_search_changed(move |_| refresh_list(&u));
+    ui.search.connect_search_changed(move |s| {
+        // Home and Security have no list: a search shows its matches in All items.
+        if !s.text().is_empty() && matches!(u.section.borrow().as_str(), "home" | "security") {
+            navigate(&u, "all");
+        }
+        refresh_list(&u);
+    });
     // Enter opens the first match; Down moves into the list.
     let u = ui.clone();
     ui.search.connect_activate(move |_| {
@@ -468,7 +500,7 @@ pub fn set_state(ui: &Ui, st: &str) {
     ui.sync_button.set_visible(open);
     ui.new_button.set_visible(open);
     if open {
-        ui.pages.set_visible_child_name("vault");
+        show_view(ui);
         reload(ui);
         ui.search.grab_focus();
     } else {
@@ -481,6 +513,8 @@ pub fn set_state(ui: &Ui, st: &str) {
         ui.multi.borrow_mut().clear();
         clear(&ui.details);
         clear(&ui.list);
+        clear(&ui.home);
+        clear(&ui.security_list);
         let editor = ui.editor.borrow_mut().take();
         if let Some(e) = editor {
             e.close();
@@ -490,8 +524,8 @@ pub fn set_state(ui: &Ui, st: &str) {
         if changed || st.is_empty() {
             account::show(ui, st);
         }
-        // The subtitle says locked or signed out; the readout is for the open vault.
-        ui.status.set_text("");
+        // The subtitle says locked or signed out.
+        ui.home_narrow.set(None);
         set_subtitle(ui, if st == state::LOCKED { "Locked" } else { "Sign in" });
     }
     nav(ui);
@@ -507,6 +541,26 @@ pub fn show_several(ui: &Ui, ids: Vec<String>) {
     ui.showing_detail.set(true);
     refresh_list(ui);
     detail::show(ui);
+}
+
+/// Shows one item from Home or the Security page: All items, with it selected.
+pub fn show_item(ui: &Ui, id: &str) {
+    navigate(ui, "all");
+    *ui.selected.borrow_mut() = Some(id.to_string());
+    ui.multi.borrow_mut().clear();
+    ui.showing_detail.set(true);
+    refresh_list(ui);
+    opened(ui, id.to_string());
+    detail::show(ui);
+    layout(ui);
+    let ui = ui.clone();
+    glib::timeout_add_local_once(Duration::from_millis(80), move || {
+        if let Some(row) = ui.list.selected_rows().first()
+            && let Some(p) = row.compute_point(&ui.list, &gtk::graphene::Point::new(0.0, 0.0))
+        {
+            ui.list_scroll.vadjustment().set_value(f64::from(p.y()) - 48.0);
+        }
+    });
 }
 
 /// Shows one item (`--item ID`, from the Assistant): all items, with it selected. While
@@ -555,6 +609,7 @@ pub fn reload(ui: &Ui) {
                 refresh_list(&ui);
                 nav(&ui);
                 detail::show(&ui);
+                refresh_views(&ui);
                 security::refresh(&ui);
             }
             Err(e) if e.is(nyx_passwords_proto::Error::Locked) => set_state(&ui, state::LOCKED),
@@ -565,9 +620,12 @@ pub fn reload(ui: &Ui) {
 
 pub fn sync(ui: &Ui) {
     let ui = ui.clone();
-    ui.status.set_text("Syncing…");
+    ui.sync_button.set_sensitive(false);
+    ui.sync_button.set_tooltip_text(Some("Syncing…"));
     glib::spawn_future_local(async move {
-        match client::call("Sync", None).await {
+        let synced = client::call("Sync", None).await;
+        ui.sync_button.set_sensitive(true);
+        match synced {
             Ok(_) => reload(&ui),
             Err(e) => {
                 toast(&ui, &format!("Sync failed: {e}"));
@@ -602,7 +660,38 @@ pub fn navigate(ui: &Ui, section: &str) {
     refresh_list(ui);
     nav(ui);
     detail::show(ui);
+    show_view(ui);
     ui.search.grab_focus();
+}
+
+/// Home, the Security page, or the list and details, as the section asks.
+fn show_view(ui: &Ui) {
+    if *ui.state.borrow() != state::UNLOCKED {
+        return;
+    }
+    let view = match ui.section.borrow().as_str() {
+        "home" => "home",
+        "security" => "security",
+        _ => "vault",
+    };
+    ui.pages.set_visible_child_name(view);
+    refresh_views(ui);
+}
+
+/// Builds Home or the Security page again, whichever is showing, from the listing and
+/// the report.
+pub fn refresh_views(ui: &Ui) {
+    if *ui.state.borrow() != state::UNLOCKED {
+        return;
+    }
+    match ui.section.borrow().clone().as_str() {
+        "home" => {
+            ui.home_narrow.set(Some(ui.narrow.get()));
+            home::build(ui);
+        }
+        "security" => security::page(ui),
+        _ => {}
+    }
 }
 
 /// The entries shown for the current section and search, in name order.
@@ -655,8 +744,7 @@ pub fn refresh_list(ui: &Ui) {
         name.set_xalign(0.0);
         name.set_ellipsize(gtk::pango::EllipsizeMode::End);
         text.append(&name);
-        let subtitle = if *ui.section.borrow() == "security" { ui.security.borrow().describe(e) } else { e.subtitle() };
-        let sub = gtk::Label::new(Some(&subtitle));
+        let sub = gtk::Label::new(Some(&e.subtitle()));
         sub.add_css_class("dim");
         sub.add_css_class("item-row-description");
         sub.set_xalign(0.0);
@@ -689,8 +777,6 @@ pub fn refresh_list(ui: &Ui) {
             "No matching items."
         } else if *ui.section.borrow() == "trash" {
             "The trash is empty."
-        } else if *ui.section.borrow() == "security" {
-            "Nothing to look at: no weak, reused or old passwords, and no records missing anything."
         } else if *ui.section.borrow() == "recent" {
             "Items you open or copy, here or in Glimpse and browsers, show up here."
         } else {
@@ -705,46 +791,36 @@ pub fn refresh_list(ui: &Ui) {
         ui.list.append(&row);
     }
     ui.rebuilding.set(false);
-    let listing = ui.listing.borrow();
-    let count = listing.entries.iter().filter(|e| !e.deleted).count();
-    let synced = listing.account.last_sync.map(|t| format!(" · synced {}", data::ago(t))).unwrap_or_default();
-    if *ui.state.borrow() == state::UNLOCKED {
-        ui.status.set_text(&format!("{count} items{synced}"));
-    }
-    drop(listing);
+    let synced = ui.listing.borrow().account.last_sync.map(|t| format!(" · synced {}", data::ago(t))).unwrap_or_default();
+    ui.sync_button.set_tooltip_text(Some(&format!("Sync now (F5){synced}")));
     layout(ui);
 }
 
-fn nav_button(icon: &str, title: &str, tooltip: &str) -> gtk::Button {
-    let button = gtk::Button::new();
-    button.add_css_class("nav-item");
-    let content = w::hbox(12);
-    content.append(&gtk::Image::from_icon_name(icon));
-    let text = w::label(title, "nav-label");
-    text.set_hexpand(true);
-    text.set_xalign(0.0);
-    text.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    text.add_css_class("compact-hide");
-    content.append(&text);
-    button.set_child(Some(&content));
-    button.set_tooltip_text(Some(tooltip));
-    button
+/// What a sidebar entry shows beside its name.
+enum Readout {
+    None,
+    Count(usize),
+    /// An accent badge: things to fix.
+    Badge(usize),
+    /// A word, dim ("Shared").
+    Note(&'static str),
 }
 
-fn nav_group(ui: &Ui, title: &str, first: bool) {
-    let heading = w::label(&title.to_uppercase(), "nav-group");
-    heading.add_css_class("compact-hide");
-    if first {
-        heading.add_css_class("first");
-    }
-    // The first group in the app's accent, the others from the theme's [sections.passwords].
-    let section = if first { nyx_ui::sidebar::ACCENT_SECTION.to_string() } else { title.to_lowercase() };
-    nyx_ui::sidebar::set_section(&heading, &section);
-    ui.nav.append(&heading);
+/// A sidebar entry: section id, name, icon, readout.
+type NavEntry = (String, String, String, Readout);
+
+/// The icon rail's mark where a group starts, in the group's colour.
+fn nav_divider(ui: &Ui, section: &str) {
+    let bar = gtk::Separator::new(gtk::Orientation::Horizontal);
+    bar.add_css_class("nav-divider");
+    bar.add_css_class("compact-show");
+    nyx_ui::sidebar::set_section(&bar, section);
+    bar.set_visible(false);
+    ui.nav.append(&bar);
 }
 
-/// A sidebar entry: section id, name, icon, item count.
-type NavItem = (String, String, String, usize);
+/// Sections that have no sidebar entry of their own, and their titles.
+const UNLISTED: &[(&str, &str)] = &[("recent", "Used lately")];
 
 pub fn nav(ui: &Ui) {
     clear(&ui.nav);
@@ -753,110 +829,100 @@ pub fn nav(ui: &Ui) {
     }
     let listing = ui.listing.borrow();
     let live = |f: &dyn Fn(&data::Entry) -> bool| listing.entries.iter().filter(|e| !e.deleted && f(e)).count();
-    let mut groups: Vec<(&str, Vec<NavItem>)> = vec![(
-        "Vault",
+    let flagged = listing.entries.iter().filter(|e| ui.security.borrow().flags(e)).count();
+    // The first entries have no heading; the first heading takes the app's accent.
+    let mut groups: Vec<(Option<&str>, &str, Vec<NavEntry>)> = vec![(
+        None,
+        "",
         vec![
-            ("all".into(), "All items".into(), "view-list-symbolic".into(), live(&|_| true)),
-            ("favorites".into(), "Favorites".into(), "starred-symbolic".into(), live(&|e| e.favorite)),
-            (
-                "recent".into(),
-                "Recent".into(),
-                "document-open-recent-symbolic".into(),
-                ui.recent.borrow().iter().filter(|id| listing.entries.iter().any(|e| e.id == **id && !e.deleted)).count(),
-            ),
+            ("home".into(), "Home".into(), "go-home-symbolic".into(), Readout::None),
+            ("all".into(), "All items".into(), "view-list-symbolic".into(), Readout::Count(live(&|_| true))),
+            ("favorites".into(), "Favorites".into(), "starred-symbolic".into(), Readout::Count(live(&|e| e.favorite))),
+            ("security".into(), "Security".into(), "security-high-symbolic".into(), Readout::Badge(flagged)),
         ],
     )];
-    let kinds: Vec<_> = data::KINDS
+    let mut types: Vec<NavEntry> = data::KINDS
         .iter()
         .map(|(id, name, icon)| (id.to_string(), name.to_string(), icon.to_string(), live(&|e| e.kind == *id)))
         .filter(|(id, _, _, n)| *n > 0 || id == "login")
+        .map(|(id, name, icon, n)| (id, name, icon, Readout::Count(n)))
         .collect();
-    groups.push(("Types", kinds));
-    let in_use: Vec<NavItem> = super::templates::all()
-        .into_iter()
-        .map(|t| {
-            let n = live(&|e| e.template.as_deref() == Some(t.id.as_str()));
-            (format!("template:{}", t.id), t.name, data::kind_icon(&t.kind).to_string(), n)
-        })
-        .filter(|(_, _, _, n)| *n > 0)
-        .collect();
-    if !in_use.is_empty() {
-        groups.push(("Templates", in_use));
-    }
-    let mut folders: Vec<_> = listing
+    types.extend(super::templates::all().into_iter().filter_map(|t| {
+        let n = live(&|e| e.template.as_deref() == Some(t.id.as_str()));
+        let icon = if t.id == "wifi" { "network-wireless-symbolic" } else { data::kind_icon(&t.kind) };
+        (n > 0).then(|| (format!("template:{}", t.id), t.name, icon.to_string(), Readout::Count(n)))
+    }));
+    groups.push((Some("Types"), nyx_ui::sidebar::ACCENT_SECTION, types));
+    let mut folders: Vec<NavEntry> = listing
         .folders
         .iter()
         .map(|f| {
             let id = f.id.clone();
-            (format!("folder:{}", f.id), f.name.clone(), "folder-symbolic".into(), live(&|e| e.folder.as_deref() == Some(&id)))
+            let n = live(&|e| e.folder.as_deref() == Some(&id));
+            (format!("folder:{}", f.id), f.name.clone(), "folder-symbolic".into(), Readout::Count(n))
         })
         .collect();
     if !folders.is_empty() {
-        folders.push((
-            "nofolder".into(),
-            "No folder".into(),
-            "folder-symbolic".into(),
-            live(&|e| e.folder.is_none() && e.organization.is_none()),
-        ));
+        let n = live(&|e| e.folder.is_none() && e.organization.is_none());
+        folders.push(("nofolder".into(), "No folder".into(), "folder-symbolic".into(), Readout::Count(n)));
     }
-    groups.push(("Folders", folders));
-    if !listing.collections.is_empty() {
-        let cols = listing
+    folders.extend(
+        listing
             .collections
             .iter()
-            .map(|c| {
-                let id = c.id.clone();
-                (
-                    format!("collection:{}", c.id),
-                    c.name.clone(),
-                    "system-users-symbolic".into(),
-                    live(&|e| e.collections.contains(&id)),
-                )
-            })
-            .collect();
-        groups.push(("Collections", cols));
-    }
+            .map(|c| (format!("collection:{}", c.id), c.name.clone(), "system-users-symbolic".into(), Readout::Note("Shared"))),
+    );
+    groups.push((Some("Folders"), "swatch-green", folders));
     let trashed = listing.entries.iter().filter(|e| e.deleted).count();
     let aliased = live(&|e| e.alias.is_some());
-    let flagged = listing.entries.iter().filter(|e| ui.security.borrow().flags(e)).count();
     groups.push((
-        "Other",
+        Some("More"),
+        "swatch-graphite",
         vec![
-            ("security".into(), "Security".into(), "security-high-symbolic".into(), flagged),
-            ("aliases".into(), "Email aliases".into(), "mail-send-symbolic".into(), aliased),
-            ("trash".into(), "Trash".into(), "user-trash-symbolic".into(), trashed),
+            ("aliases".into(), "Email aliases".into(), "mail-send-symbolic".into(), Readout::Count(aliased)),
+            ("trash".into(), "Trash".into(), "user-trash-symbolic".into(), Readout::Count(trashed)),
         ],
     ));
     drop(listing);
     let current = ui.section.borrow().clone();
-    let mut title = None;
-    for (i, (group, items)) in groups.into_iter().enumerate() {
-        nav_group(ui, group, i == 0);
-        for (id, name, icon, count) in items {
-            let b = nav_button(&icon, &name, &name);
-            let readout = w::label(&count.to_string(), "nav-readout");
-            readout.add_css_class("compact-hide");
-            if let Some(line) = b.child().and_downcast::<gtk::Box>() {
-                line.append(&readout);
+    let mut title = UNLISTED.iter().find(|(id, _)| *id == current).map(|(_, t)| t.to_string());
+    for (heading, section, items) in groups {
+        if let Some(heading) = heading {
+            nav_divider(ui, section);
+            let row = if heading == "Folders" {
+                let u = ui.clone();
+                nyx_ui::sidebar::group_label_with_add(heading, false, "New folder", move || new_folder(&u))
+            } else {
+                nyx_ui::sidebar::group_label(heading, false)
+            };
+            nyx_ui::sidebar::set_section(&row, section);
+            ui.nav.append(&row);
+        }
+        for (id, name, icon, readout) in items {
+            let item = nyx_ui::sidebar::nav_item(&icon, &name, &name);
+            match readout {
+                Readout::None => {}
+                Readout::Count(n) => item.set_count(Some(n as u64)),
+                Readout::Badge(n) => item.set_badge(Some(n as u64)),
+                Readout::Note(text) => {
+                    if let Some(line) = item.button.child().and_downcast::<gtk::Box>() {
+                        let note = w::label(text, "nav-sub");
+                        note.add_css_class("compact-hide");
+                        line.append(&note);
+                    }
+                }
             }
             if id == current {
-                b.add_css_class("active");
+                item.set_active(true);
                 title = Some(name.clone());
             }
             if let Some(folder) = id.strip_prefix("folder:") {
-                folder_menu(ui, &b, folder, &name);
-                b.set_tooltip_text(Some(&format!("{name} · right-click to rename or delete")));
+                folder_menu(ui, &item.button, folder, &name);
+                item.button.set_tooltip_text(Some(&format!("{name} · right-click to rename or delete")));
             }
             let u = ui.clone();
-            b.connect_clicked(move |_| navigate(&u, &id));
-            ui.nav.append(&b);
-        }
-        if group == "Folders" {
-            let b = nav_button("list-add-symbolic", "New folder", "New folder");
-            b.add_css_class("dim");
-            let u = ui.clone();
-            b.connect_clicked(move |_| new_folder(&u));
-            ui.nav.append(&b);
+            item.button.connect_clicked(move |_| navigate(&u, &id));
+            ui.nav.append(&item.button);
         }
     }
     match title {
@@ -979,9 +1045,11 @@ pub fn layout(ui: &Ui) {
     // The centred search mustn't reach the sidebar toggle or the actions beside it.
     ui.search.set_max_width_chars(if narrow { SEARCH_NARROW } else { SEARCH_WIDE });
     compact_sidebar(ui);
+    if *ui.section.borrow() == "home" && ui.home_narrow.get().is_some_and(|n| n != narrow) {
+        refresh_views(ui);
+    }
     let empty = visible(ui).is_empty();
     let open = *ui.state.borrow() == state::UNLOCKED;
-    ui.security_bar.set_visible(open && *ui.section.borrow() == "security");
     let trashed = ui.listing.borrow().entries.iter().any(|e| e.deleted);
     ui.trash_bar.set_visible(open && *ui.section.borrow() == "trash" && trashed);
     ui.new_button.set_visible(open && *ui.section.borrow() != "trash");
@@ -1006,13 +1074,24 @@ fn compact_sidebar(ui: &Ui) {
         ui.sidebar.remove_css_class("compact");
     }
     fn hide(root: &gtk::Widget, compact: bool) {
-        if root.has_css_class("nav-item")
-            && let Some(content) = root.downcast_ref::<gtk::Button>().and_then(|b| b.child())
-        {
-            content.set_halign(if compact { gtk::Align::Center } else { gtk::Align::Fill });
+        if root.has_css_class("nav-item") {
+            if compact {
+                root.add_css_class("compact");
+            } else {
+                root.remove_css_class("compact");
+            }
+            if let Some(content) = root.downcast_ref::<gtk::Button>().and_then(|b| b.child()) {
+                content.set_halign(if compact { gtk::Align::Center } else { gtk::Align::Fill });
+            }
         }
+        // An empty count stays hidden when the labels come back.
+        let empty_readout =
+            root.has_css_class("nav-readout") && root.downcast_ref::<gtk::Label>().is_some_and(|l| l.text().is_empty());
         if root.has_css_class("compact-hide") {
-            root.set_visible(!compact);
+            root.set_visible(!compact && !empty_readout);
+        }
+        if root.has_css_class("compact-show") {
+            root.set_visible(compact);
         }
         let mut child = root.first_child();
         while let Some(c) = child {
@@ -1041,6 +1120,8 @@ fn install_icons() {
         ("nyx-card-symbolic.svg", include_str!("../../data/icons/nyx-card-symbolic.svg")),
         ("nyx-key-symbolic.svg", include_str!("../../data/icons/nyx-key-symbolic.svg")),
         ("nyx-duplicate-symbolic.svg", include_str!("../../data/icons/nyx-duplicate-symbolic.svg")),
+        ("nyx-import-symbolic.svg", include_str!("../../data/icons/nyx-import-symbolic.svg")),
+        ("nyx-export-symbolic.svg", include_str!("../../data/icons/nyx-export-symbolic.svg")),
     ] {
         let _ = std::fs::write(dir.join(name), svg);
     }

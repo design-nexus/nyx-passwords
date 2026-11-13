@@ -12,6 +12,7 @@ mod editor;
 mod emergency;
 #[cfg(debug_assertions)]
 pub mod fixture;
+mod home;
 mod icons;
 mod pairing;
 pub mod prefs;

@@ -5,10 +5,27 @@
 
 /* ---------- Header ---------- */
 
-.header-status {
-  font-size: 11.5px;
-  color: @theme_dim_text;
-  font-feature-settings: "tnum";
+.key-hint {
+  color: @theme_text_tertiary;
+  font-size: 0.846em;
+}
+
+window.passwords-window .app-header button.new-button {
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 7px;
+  background: @field;
+  box-shadow: inset 0 0 0 1px @hairline;
+  font-weight: 600;
+}
+
+window.passwords-window .app-header button.new-button:hover {
+  background: mix(@field, @theme_text, 0.06);
+}
+
+window.passwords-window .app-header button.new-button .key-hint {
+  margin-left: 2px;
+  font-weight: 400;
 }
 
 window.passwords-window .app-header button.bar-button {
@@ -39,6 +56,255 @@ window.passwords-window .app-header button.bar-button:hover {
 
 .nav-readout {
   font-feature-settings: "tnum";
+}
+
+.settings-navigation .nav-sub {
+  color: @theme_text_tertiary;
+  font-size: 0.846em;
+}
+
+/* The icon rail's mark where a group starts: a short bar in its colour. */
+.settings-navigation separator.nav-divider {
+  margin: 8px 14px 6px;
+  min-height: 2px;
+  border-radius: 1px;
+  background: @theme_divider;
+}
+
+/* ---------- Monograms ---------- */
+
+.monogram {
+  border-radius: 8px;
+  background-color: currentColor;
+  background-image: linear-gradient(160deg, color-mix(in srgb, currentColor 92%, white), color-mix(in srgb, currentColor 80%, black));
+  box-shadow: inset 0 1px 0 alpha(white, 0.18);
+}
+
+.monogram-letter {
+  color: white;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+/* ---------- Home ---------- */
+
+.home-page {
+  padding: 24px 28px 32px;
+}
+
+.health-card {
+  padding: 18px 22px;
+  border-radius: var(--nyx-radius-card);
+  background: @theme_card;
+  box-shadow: inset 0 0 0 1px alpha(@theme_text, 0.07);
+}
+
+.health-ring.good {
+  color: @theme_success;
+}
+
+.health-ring.fair {
+  color: @theme_warning;
+}
+
+.health-ring.poor {
+  color: @theme_danger;
+}
+
+.health-score {
+  font-size: 22px;
+  font-weight: 600;
+  font-feature-settings: "tnum";
+}
+
+.health-title {
+  font-size: 1.231em;
+  font-weight: 600;
+}
+
+.problem-tiles {
+  margin-top: 12px;
+}
+
+window.passwords-window button.problem-tile {
+  padding: 12px;
+  border-radius: var(--nyx-radius-card);
+  background: color-mix(in srgb, currentColor 9%, @theme_card);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 22%, transparent);
+  font-weight: normal;
+}
+
+window.passwords-window button.problem-tile:hover {
+  background: color-mix(in srgb, currentColor 15%, @theme_card);
+}
+
+.tile-disc {
+  min-width: 26px;
+  min-height: 26px;
+  border-radius: 13px;
+  background-color: currentColor;
+  margin-bottom: 10px;
+}
+
+.tile-disc image {
+  color: white;
+  -gtk-icon-size: 14px;
+}
+
+.tile-count {
+  color: @theme_text;
+  font-size: 1.385em;
+  font-weight: 600;
+  font-feature-settings: "tnum";
+}
+
+.tile-title {
+  color: @theme_text;
+  font-weight: 600;
+}
+
+.tile-desc {
+  color: @theme_dim_text;
+  font-size: 0.923em;
+}
+
+.home-columns {
+  margin-top: 20px;
+}
+
+.home-heading {
+  font-weight: 600;
+  margin: 2px 2px 0;
+}
+
+.home-page > .home-heading {
+  margin: 20px 2px 8px;
+}
+
+window.passwords-window button.home-more {
+  min-height: 22px;
+  padding: 0 6px;
+  font-size: 0.923em;
+  color: @theme_accent;
+}
+
+.quick-list {
+  padding: 4px 0;
+}
+
+.quick-row {
+  padding: 2px 8px 2px 4px;
+}
+
+.quick-row + .quick-row {
+  border-top: 1px solid @hairline;
+}
+
+window.passwords-window button.quick-open,
+window.passwords-window button.fix-open {
+  padding: 5px 8px;
+  border-radius: var(--nyx-radius-small);
+  font-weight: normal;
+  color: @theme_text;
+}
+
+.quick-name {
+  font-weight: 500;
+}
+
+.quick-sub {
+  color: @theme_text_tertiary;
+  font-size: 0.846em;
+}
+
+.quick-empty {
+  padding: 12px 14px;
+}
+
+window.passwords-window button.tool-card {
+  padding: 12px;
+  border-radius: var(--nyx-radius-card);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px alpha(@theme_text, 0.1);
+  font-weight: normal;
+  color: @theme_text;
+}
+
+window.passwords-window button.tool-card:hover {
+  background: @row_hover;
+}
+
+window.passwords-window button.tool-card image {
+  color: @theme_dim_text;
+  margin-top: 1px;
+}
+
+.tool-title {
+  font-weight: 600;
+}
+
+.tool-desc {
+  color: @theme_text_tertiary;
+  font-size: 0.846em;
+}
+
+/* ---------- Security ---------- */
+
+.security-bar {
+  padding: 14px 16px 14px 24px;
+}
+
+.page-title {
+  font-size: 1.231em;
+  font-weight: 600;
+}
+
+.page-about {
+  font-size: 0.923em;
+}
+
+.security-list {
+  padding: 6px 24px 24px;
+}
+
+.fix-group-title {
+  margin: 18px 2px 8px;
+  font-weight: 600;
+}
+
+.count-pill {
+  font-size: 0.846em;
+  font-weight: 600;
+  padding: 0 7px;
+  border-radius: 9px;
+  background: color-mix(in srgb, currentColor 15%, transparent);
+}
+
+.fix-row {
+  padding: 4px 12px 4px 4px;
+}
+
+.fix-row + .fix-row {
+  border-top: 1px solid @hairline;
+}
+
+.fix-name {
+  font-weight: 500;
+}
+
+.fix-user {
+  color: @theme_text_tertiary;
+  font-size: 0.923em;
+}
+
+.fix-why {
+  color: @theme_dim_text;
+  font-size: 0.923em;
+}
+
+window.passwords-window .fix-actions button {
+  min-height: 26px;
+  padding: 0 10px;
 }
 
 /* ---------- Item list ---------- */

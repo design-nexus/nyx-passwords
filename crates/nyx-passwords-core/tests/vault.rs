@@ -181,6 +181,7 @@ async fn security_report() {
     let get = |id| found.iter().find(|f: &&Finding| f.id == id).cloned();
     assert_eq!(get(reused.id).map(|f| f.reused), Some(1));
     assert_eq!(get(original.id).map(|f| f.reused), Some(1));
+    assert_eq!(get(original.id).map(|f| f.same_as), Some(vec![reused.id]));
     assert!(get(weak.id).is_some_and(|f| f.weak && f.reused == 0));
     assert_eq!(get(old.id).and_then(|f| f.age_days), Some(1023));
     // Scored once; a second report uses the cache.

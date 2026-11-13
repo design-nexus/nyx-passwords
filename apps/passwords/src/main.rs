@@ -10,7 +10,7 @@ fn main() -> glib::ExitCode {
     let args: Vec<_> = std::env::args().collect();
     if args.iter().any(|s| s == "--help" || s == "-h") {
         println!(
-            "Usage: nyx-passwords [--unlock] [--section all|favorites|recent|login|note|card|identity|trash|settings] [--item ID]"
+            "Usage: nyx-passwords [--unlock] [--section home|all|favorites|recent|security|login|note|card|identity|trash|settings] [--item ID]"
         );
         return glib::ExitCode::SUCCESS;
     }

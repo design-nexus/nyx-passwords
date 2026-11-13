@@ -12,6 +12,7 @@
 //!   PASSWORDS_TEST_EDIT=1             open the editor on the selection
 //!   PASSWORDS_TEST_UNLOCK=PASSWORD    unlock a locked vault first
 //!   PASSWORDS_TEST_AGENT=1            turn every SSH key on for the agent
+//!   PASSWORDS_TEST_OPENED=NAME[|NAME…] items to count as used lately, the latest first
 
 use std::time::Duration;
 
@@ -22,7 +23,7 @@ use super::client;
 use super::ui::{self, Ui};
 
 pub fn maybe(ui: &Ui) {
-    let set_up = ["SIGNIN", "UNLOCK", "SECTION", "SELECT", "SETTINGS", "EDIT", "AGENT"]
+    let set_up = ["SIGNIN", "UNLOCK", "SECTION", "SELECT", "SETTINGS", "EDIT", "AGENT", "OPENED"]
         .iter()
         .any(|k| std::env::var_os(format!("PASSWORDS_TEST_{k}")).is_some());
     if !set_up {
@@ -69,6 +70,21 @@ pub fn maybe(ui: &Ui) {
             for id in keys {
                 let _ = client::call("SetSshAgentKey", Some((id.as_str(), true).to_variant())).await;
             }
+        }
+        if let Ok(names) = std::env::var("PASSWORDS_TEST_OPENED") {
+            for _ in 0..40 {
+                if !ui.listing.borrow().entries.is_empty() {
+                    break;
+                }
+                glib::timeout_future(Duration::from_millis(250)).await;
+            }
+            for name in names.split('|').rev() {
+                let id = ui.listing.borrow().entries.iter().find(|e| e.name == name).map(|e| e.id.clone());
+                if let Some(id) = id {
+                    let _ = client::call("OpenedItem", Some((id.as_str(),).to_variant())).await;
+                }
+            }
+            ui::reload(&ui);
         }
         if let Ok(section) = std::env::var("PASSWORDS_TEST_SECTION") {
             ui::navigate(&ui, &section);

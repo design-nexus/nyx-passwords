@@ -30,7 +30,7 @@ impl Default for Prefs {
             glow: true,
             reduce_motion: false,
             sidebar_collapsed: false,
-            last_section: "all".into(),
+            last_section: "home".into(),
             last_server: String::new(),
             last_email: String::new(),
             vault: Vault::default(),

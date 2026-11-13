@@ -28,6 +28,8 @@ pub struct Finding {
     pub id: Uuid,
     /// How many other logins use the same password.
     pub reused: usize,
+    /// Those other logins.
+    pub same_as: Vec<Uuid>,
     pub weak: bool,
     /// Days since the password last changed, when that's over `OLD_DAYS`.
     pub age_days: Option<u64>,
@@ -61,11 +63,11 @@ pub fn audit_only(keys: &Keys, sync: &Sync, now: SystemTime, cache: &mut Strengt
 fn audit_some(keys: &Keys, sync: &Sync, now: SystemTime, cache: &mut StrengthCache, only: Option<&[Uuid]>) -> Vec<Finding> {
     let today = now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() / 86_400);
     // Digests, not passwords, and only for the length of the report.
-    let mut by_password: HashMap<[u8; 32], usize> = HashMap::new();
+    let mut by_password: HashMap<[u8; 32], Vec<Uuid>> = HashMap::new();
     let mut rows = Vec::new();
     for (c, password) in audited(keys, sync) {
         let digest = password_digest(&password);
-        *by_password.entry(digest).or_default() += 1;
+        by_password.entry(digest).or_default().push(c.id);
         if only.is_some_and(|ids| !ids.contains(&c.id)) {
             continue;
         }
@@ -83,7 +85,10 @@ fn audit_some(keys: &Keys, sync: &Sync, now: SystemTime, cache: &mut StrengthCac
         rows.push((c.id, digest, weak, age));
     }
     rows.into_iter()
-        .map(|(id, digest, weak, age_days)| Finding { id, reused: by_password[&digest] - 1, weak, age_days })
+        .map(|(id, digest, weak, age_days)| {
+            let same_as: Vec<Uuid> = by_password[&digest].iter().copied().filter(|other| *other != id).collect();
+            Finding { id, reused: same_as.len(), same_as, weak, age_days }
+        })
         .filter(|f| f.reused > 0 || f.weak || f.age_days.is_some())
         .collect()
 }
