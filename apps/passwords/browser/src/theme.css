@@ -1,51 +1,52 @@
 /* The Nyx 2.0 look (nyx-design STYLE.md) for the extension's pages: one solid surface,
    Inter, cards for groups, the app's accent only for state. The colours are Passwords'
-   own theme, set by nyx.js; these are Nyx Dark and Nyx Light until it arrives. */
+   own theme, set by nyx.js; these are Nyx Dark and Nyx Light until it arrives. In Nyx
+   Browser, which gives an extension's pages the suite's theme as --nyx-*, its theme wins. */
 :root {
-  --bg: #09090a;
-  --panel: #0e0e0f;
-  --card: #161617;
-  --raised: #1d1d1f;
-  --popover: #1a1a1c;
-  --surface: #1a1a1c;
-  --text: #e8e8ea;
-  --dim: #9a9aa1;
-  --tertiary: #7b7b83;
-  --accent: #5b9cff;
-  --on-accent: #ffffff;
-  --border: #2a2a2d;
-  --divider: #1a1a1c;
-  --danger: #ff6b6b;
-  --warning: #e0a63a;
-  --success: #46d08a;
-  --hover-pct: 6%;
-  --selection-pct: 16%;
-  --font-ui: "Inter", "Inter Variable", system-ui, sans-serif;
+  --bg: var(--nyx-bg, #09090a);
+  --panel: var(--nyx-panel, #0e0e0f);
+  --card: var(--nyx-card, #161617);
+  --raised: var(--nyx-raised, #1d1d1f);
+  --popover: var(--nyx-popover, #1a1a1c);
+  --surface: var(--nyx-surface, #1a1a1c);
+  --text: var(--nyx-text, #e8e8ea);
+  --dim: var(--nyx-dim, #9a9aa1);
+  --tertiary: var(--nyx-tertiary, #7b7b83);
+  --accent: var(--nyx-accent, #5b9cff);
+  --on-accent: var(--nyx-on-accent, #ffffff);
+  --border: var(--nyx-border, #2a2a2d);
+  --divider: var(--nyx-divider, #1a1a1c);
+  --danger: var(--nyx-danger, #ff6b6b);
+  --warning: var(--nyx-warning, #e0a63a);
+  --success: var(--nyx-success, #46d08a);
+  --hover-pct: var(--nyx-hover, 6%);
+  --selection-pct: var(--nyx-selection, 16%);
+  --font-ui: var(--nyx-font, "Inter", "Inter Variable", system-ui, sans-serif);
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
-  --r-small: 7px;
-  --r-card: 11px;
-  --r-dialog: 15px;
+  --r-small: var(--nyx-radius-small, 7px);
+  --r-card: var(--nyx-radius-card, 11px);
+  --r-dialog: var(--nyx-radius-dialog, 15px);
   --scale: 1;
 }
 @media (prefers-color-scheme: light) {
   :root:not([data-light]) {
-    --bg: #f7f7f8;
-    --panel: #f0f0f2;
-    --card: #ffffff;
-    --raised: #ffffff;
-    --popover: #ffffff;
-    --surface: #ffffff;
-    --text: #18181b;
-    --dim: #5a5a64;
-    --tertiary: #6c6c76;
-    --accent: #2f6fea;
-    --border: #dcdce1;
-    --divider: #e6e6ea;
-    --danger: #d93a3a;
-    --warning: #b7791f;
-    --success: #1f9e5c;
-    --hover-pct: 5%;
-    --selection-pct: 14%;
+    --bg: var(--nyx-bg, #f7f7f8);
+    --panel: var(--nyx-panel, #f0f0f2);
+    --card: var(--nyx-card, #ffffff);
+    --raised: var(--nyx-raised, #ffffff);
+    --popover: var(--nyx-popover, #ffffff);
+    --surface: var(--nyx-surface, #ffffff);
+    --text: var(--nyx-text, #18181b);
+    --dim: var(--nyx-dim, #5a5a64);
+    --tertiary: var(--nyx-tertiary, #6c6c76);
+    --accent: var(--nyx-accent, #2f6fea);
+    --border: var(--nyx-border, #dcdce1);
+    --divider: var(--nyx-divider, #e6e6ea);
+    --danger: var(--nyx-danger, #d93a3a);
+    --warning: var(--nyx-warning, #b7791f);
+    --success: var(--nyx-success, #1f9e5c);
+    --hover-pct: var(--nyx-hover, 5%);
+    --selection-pct: var(--nyx-selection, 14%);
   }
 }
 :root {

@@ -45,6 +45,8 @@ const BROWSERS: &[(&str, &str)] = &[
     ("firefox-bin", "Firefox"),
     ("zen", "Zen"),
     ("zen-bin", "Zen"),
+    ("nyx-browser", "Browser"),
+    ("nyx-browser-bin", "Browser"),
     ("chromium", "Chromium"),
     ("chrome", "Chrome"),
     ("brave", "Brave"),
@@ -95,8 +97,13 @@ fn browser_parent(pid: i32) -> Option<(i32, String)> {
     // the state field after it.
     let ppid: i32 = stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()?;
     let exe = std::fs::read_link(format!("/proc/{ppid}/exe")).ok()?;
-    let name = exe.file_name()?.to_str()?;
-    BROWSERS.iter().find(|(n, _)| *n == name).map(|(_, b)| (ppid, b.to_string()))
+    let name = browser_named(exe.file_name()?.to_str()?)?;
+    Some((ppid, name.to_string()))
+}
+
+/// The pairing list's name for a browser's executable, if it's one of `BROWSERS`.
+fn browser_named(exe: &str) -> Option<&'static str> {
+    BROWSERS.iter().find(|(n, _)| *n == exe).map(|(_, b)| *b)
 }
 
 /// The scope for an executable path: one of `PEERS`, in `allowed_dir` or a folder the
@@ -179,6 +186,16 @@ mod tests {
         assert_eq!(scope_of(&dir.join(".nyx-passwords-settings-wrapped"), dir), Some(Scope::Settings));
         assert_eq!(scope_of(&dir.join(".nyx-glimpse-backend-wrapped"), dir), Some(Scope::Glimpse));
         assert_eq!(scope_of(&dir.join(".nyx-passwords-other-wrapped"), dir), None);
+    }
+
+    #[test]
+    fn browsers_by_executable() {
+        assert_eq!(browser_named("firefox"), Some("Firefox"));
+        assert_eq!(browser_named("zen-bin"), Some("Zen"));
+        assert_eq!(browser_named("nyx-browser"), Some("Browser"));
+        assert_eq!(browser_named("nyx-browser-bin"), Some("Browser"));
+        assert_eq!(browser_named("nyx-browser-bridge"), None);
+        assert_eq!(browser_named("python3"), None);
     }
 
     #[test]

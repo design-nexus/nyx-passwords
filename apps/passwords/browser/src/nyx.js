@@ -18,8 +18,14 @@ const NYX = (() => {
 
   let swatches = ["#5b9cff", "#9d7bff", "#ff6fae", "#ff6b6b", "#ff7a59", "#f2b545", "#46d08a", "#4cc9d6"];
 
+  // Nyx Browser gives its extensions' pages the suite's theme itself (theme.css reads it).
+  const browserTheme = () => getComputedStyle(root).getPropertyValue("--nyx-bg").trim() !== "";
+
   function apply(t) {
-    if (t) {
+    if (browserTheme()) {
+      root.dataset.light = getComputedStyle(root).getPropertyValue("--nyx-scheme").trim() === "light" ? "true" : "false";
+      if (t?.swatches?.length) swatches = t.swatches.filter((s) => s.toLowerCase() !== "#a3a3ab");
+    } else if (t) {
       const set = (k, v) => v !== undefined && v !== null && v !== "" && root.style.setProperty(k, String(v));
       for (const k of ["bg", "panel", "card", "raised", "popover", "surface", "text", "dim", "tertiary", "accent", "border", "divider", "danger", "warning", "success"]) set(`--${k}`, t[k]);
       set("--hover-pct", `${Math.round((t.hover ?? 0.06) * 100)}%`);
@@ -38,6 +44,7 @@ const NYX = (() => {
   }
   api.storage.local.get("theme").then(({ theme }) => apply(theme), () => apply());
   api.storage.onChanged.addListener((change) => change.theme && apply(change.theme.newValue));
+  matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => browserTheme() && apply());
   setTimeout(() => root.classList.add("themed"), 200);
 
   // ---- building ----

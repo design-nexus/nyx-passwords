@@ -2,6 +2,9 @@
    the vault), the chosen item, the generator or settings on the right. */
 html, body { height: 100%; }
 body { width: 760px; height: 560px; display: flex; flex-direction: column; overflow: hidden; position: relative; }
+/* As a dropdown, on the popover surface its browser's other dropdowns have; nyx.js's own
+   theme, outside Nyx Browser, sets the background inline. */
+html:not(:has(body.welcome)) { --bg: var(--popover); }
 /* Opened in a tab after installing: the same page, as a card in the middle. */
 html:has(body.welcome) { background: var(--panel); }
 body.welcome { margin: 56px auto; border-radius: var(--r-dialog); box-shadow: var(--shadow); }
