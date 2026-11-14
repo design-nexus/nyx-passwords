@@ -16,7 +16,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["pages"] => Ok(pages()),
-        ["describe", _] => Ok(describe()),
+        ["describe", _] => Ok(if preview_supported() { describe_preview() } else { describe() }),
         ["set", _, key, value] => set(key, value),
         ["theme-changed"] => Ok(Value::Null),
         _ => Err("usage: nyx-passwords-settings pages | describe PAGE | set PAGE KEY VALUE".to_string()),
@@ -51,6 +51,169 @@ fn opts(pairs: &[(u64, &str)]) -> Value {
     Value::Array(pairs.iter().map(|(v, l)| json!([v.to_string(), l])).collect())
 }
 
+const LOCK_AFTER: &[(u64, &str)] =
+    &[(1, "1 minute"), (5, "5 minutes"), (15, "15 minutes"), (30, "30 minutes"), (60, "1 hour"), (240, "4 hours"), (0, "Never")];
+const CLEAR_AFTER: &[(u64, &str)] = &[
+    (10, "After 10 seconds"),
+    (20, "After 20 seconds"),
+    (30, "After 30 seconds"),
+    (60, "After 1 minute"),
+    (120, "After 2 minutes"),
+    (0, "Never"),
+];
+const SYNC_EVERY: &[(u64, &str)] =
+    &[(5, "Every 5 minutes"), (15, "Every 15 minutes"), (30, "Every 30 minutes"), (60, "Every hour"), (0, "Only when unlocking")];
+
+fn label(pairs: &[(u64, &'static str)], value: u64) -> Option<&'static str> {
+    pairs.iter().find(|(v, _)| *v == value).map(|(_, l)| *l)
+}
+
+fn preview_supported() -> bool {
+    std::env::var("SETTINGS_KINDS").is_ok_and(|k| k.split(' ').any(|x| x == "preview"))
+}
+
+/// The two-column page: the controls on the left, the vault's state and where logins
+/// show up on the right. Counts come from the local copy's unencrypted parts.
+fn describe_preview() -> Value {
+    let s = current();
+    let (state, host) = daemon_status();
+    let open = state.as_deref() == Some(proto::state::UNLOCKED);
+    let locks = match s.lock_minutes {
+        0 => "doesn't lock on a timer".to_string(),
+        n => format!("locks after {} unused", label(LOCK_AFTER, n).map_or_else(|| format!("{n} minutes"), str::to_string)),
+    };
+    let (title, line) = match state.as_deref() {
+        Some(proto::state::UNLOCKED) => ("Vault open", format!("{host} · {locks}")),
+        Some(proto::state::LOCKED) => ("Vault locked", host.clone()),
+        Some(_) => ("Not signed in", "Sign in in Passwords".to_string()),
+        None => ("Passwords isn't running", "It starts when Passwords or Glimpse needs it".to_string()),
+    };
+    let summary = nyx_passwords_core::store::summary(&paths::data_dir().join("vault.sqlite"));
+    let browsers = summary.as_ref().map(|s| s.browsers.clone()).unwrap_or_default();
+
+    let mut blocks = Vec::new();
+    if open {
+        blocks.push(json!({"kind": "rows", "rows": [
+            {"kind": "button", "key": "lock", "title": "Lock now", "icon": "system-lock-screen-symbolic", "label": "Lock", "refresh": true},
+            {"kind": "button", "key": "sync", "title": "Sync now", "desc": "Fetch changes from the server", "icon": "view-refresh-symbolic", "label": "Sync", "refresh": true},
+        ]}));
+    }
+    if let Some(sum) = &summary {
+        let passkeys_sub = match (s.browser_passkeys, browsers.len()) {
+            (false, _) => "Not in browsers".to_string(),
+            (true, 0) => String::new(),
+            (true, 1) => "In 1 browser".to_string(),
+            (true, n) => format!("In {n} browsers"),
+        };
+        blocks.push(json!({"kind": "stats", "items": [
+            {"label": "Logins", "value": sum.logins.to_string()},
+            {"label": "Last synced", "value": sum.last_sync.map_or_else(|| "Not yet".to_string(), ago), "sub": label(SYNC_EVERY, s.sync_minutes).unwrap_or_default()},
+            {"label": "Passkeys", "value": sum.passkeys.to_string(), "sub": passkeys_sub},
+        ]}));
+    }
+    let item = |icon: &str, label: &str, sub: &str, on: bool| {
+        let mut item = json!({"icon": icon, "label": label, "sub": sub, "value": if on { "On" } else { "Off" }});
+        if on {
+            item["tone"] = json!("good");
+        }
+        item
+    };
+    let browsers_sub = match browsers.as_slice() {
+        [] => "No browser paired".to_string(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    };
+    let browsers_sub =
+        if s.fill_on_load && !browsers.is_empty() { format!("{browsers_sub} · fill as pages load") } else { browsers_sub };
+    let items = [
+        item("system-search-symbolic", "Glimpse", "“pw” and a name · names only", s.glimpse),
+        item("web-browser-symbolic", "Browsers", &browsers_sub, !browsers.is_empty()),
+        item("starred-symbolic", "Nyx Assistant", "Asks for a key press each time", s.assistant),
+        item("utilities-terminal-symbolic", "SSH and git", "Keys turned on for the agent; each use asks", s.ssh_agent),
+    ];
+    blocks.push(json!({"kind": "list", "title": "Where your logins show up", "items": items}));
+    blocks.push(json!({"kind": "rows", "rows": [
+        {"kind": "button", "key": "open", "title": "Open Passwords", "icon": "dialog-password-symbolic", "label": "Open"},
+    ]}));
+
+    let paired = if browsers.is_empty() { "Pair one in Passwords' settings".to_string() } else { browsers.join(", ") };
+    json!({
+        "poll": 10,
+        "preview": {
+            "title": title, "line": line, "blocks": blocks,
+            "foot": "Glimpse and Nyx Assistant never see a password; Passwords copies it for them.",
+            "foot_icon": "security-high-symbolic",
+        },
+        "groups": [
+            {"title": "Locking", "rows": [
+                {"kind": "choice", "key": "lock_minutes", "title": "Lock after", "desc": "When the vault hasn't been used this long", "icon": "preferences-system-time-symbolic", "value": s.lock_minutes.to_string(), "options": opts(LOCK_AFTER)},
+                {"kind": "switch", "key": "lock_on_screen_lock", "title": "Lock when the screen locks", "desc": "Along with the desktop", "icon": "system-lock-screen-symbolic", "value": s.lock_on_screen_lock},
+                {"kind": "switch", "key": "lock_on_sleep", "title": "Lock on sleep", "desc": "Before the computer suspends", "icon": "weather-clear-night-symbolic", "value": s.lock_on_sleep},
+            ]},
+            {"title": "Copying", "rows": [
+                {"kind": "choice", "key": "clipboard_seconds", "title": "Clear copied values", "desc": "If the clipboard still holds the copy", "icon": "edit-copy-symbolic", "value": s.clipboard_seconds.to_string(), "options": opts(CLEAR_AFTER)},
+                {"kind": "switch", "key": "paste_once", "title": "Paste once", "desc": "Clear the clipboard after the first paste", "icon": "edit-paste-symbolic", "value": s.paste_once},
+                {"kind": "switch", "key": "notify_copies", "title": "Notify on copy", "desc": "Names what was copied, never the value", "icon": "preferences-system-notifications-symbolic", "value": s.notify_copies},
+            ]},
+            {"title": "Finding logins", "note": "Glimpse never shows a password and Nyx Assistant never sees one. The Assistant can also generate passwords, count weak ones and show a login.", "rows": [
+                {"kind": "switch", "key": "glimpse", "title": "In Glimpse", "desc": "Type “pw” and a name", "icon": "system-search-symbolic", "value": s.glimpse},
+                {"kind": "switch", "key": "assistant", "title": "With Nyx Assistant", "desc": "Asks for a key press each time", "icon": "starred-symbolic", "value": s.assistant},
+                {"kind": "choice", "key": "sync_minutes", "title": "Sync", "desc": "While the vault is open", "icon": "view-refresh-symbolic", "value": s.sync_minutes.to_string(), "options": opts(SYNC_EVERY)},
+            ]},
+            {"title": "Browsers", "collapsible": true, "note": "Logins fill only on https, only the one made for that exact site, only into empty fields. Each passkey use is confirmed in the extension.", "rows": [
+                {"kind": "switch", "key": "fill_on_load", "title": "Fill logins as pages load", "desc": "On https, for that exact site only", "icon": "web-browser-symbolic", "value": s.fill_on_load},
+                {"kind": "switch", "key": "browser_passkeys", "title": "Passkeys in browsers", "desc": "Paired browsers offer and save them", "icon": "auth-fingerprint-symbolic", "value": s.browser_passkeys},
+                {"kind": "button", "key": "open_browsers", "title": "Paired browsers", "desc": paired, "icon": "preferences-system-symbolic", "label": "Open"},
+            ]},
+            {"title": "SSH agent", "collapsible": true, "rows": [
+                {"kind": "switch", "key": "ssh_agent", "title": "SSH agent", "desc": "For ssh and git; each use asks first", "icon": "utilities-terminal-symbolic", "value": s.ssh_agent},
+                {"kind": "info", "key": "ssh_socket", "title": "SSH_AUTH_SOCK", "icon": "insert-link-symbolic", "value": proto::ssh_agent_socket_path().map(|p| p.display().to_string()).unwrap_or_default()},
+            ]},
+            {"title": "Email aliases", "collapsible": true, "rows": dress(aliases(&s), &[
+                ("username.kind", "avatar-default-symbolic", None),
+                ("username.service", "mail-send-symbolic", None),
+                ("username.service_domain", "network-workgroup-symbolic", None),
+                ("username.service_url", "network-server-symbolic", Some("Self-hosted; empty for the hosted one")),
+                ("username.zone_id", "emblem-system-symbolic", None),
+                ("username.forward_to", "mail-forward-symbolic", None),
+                ("username.email", "mail-unread-symbolic", None),
+                ("username.domain", "network-workgroup-symbolic", None),
+                ("open_aliases", "mail-message-new-symbolic", Some("See aliases and save tokens")),
+            ])},
+            {"title": "Templates", "collapsible": true, "rows": dress(templates(), &[
+                ("templates", "text-x-generic-symbolic", None),
+                ("open_templates", "document-edit-symbolic", None),
+            ])},
+        ]
+    })
+}
+
+/// Gives rows their icon, and a shorter description where one is given.
+fn dress(mut rows: Vec<Value>, looks: &[(&str, &str, Option<&str>)]) -> Vec<Value> {
+    for row in &mut rows {
+        let key = row["key"].as_str().unwrap_or_default().to_string();
+        if let Some((_, icon, desc)) = looks.iter().find(|(k, ..)| *k == key) {
+            row["icon"] = json!(icon);
+            if let Some(desc) = desc {
+                row["desc"] = json!(desc);
+            }
+        }
+    }
+    rows
+}
+
+/// "just now", "5 min ago", "3 h ago", "2 days ago".
+fn ago(epoch: u64) -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let s = now.saturating_sub(epoch);
+    match s {
+        0..60 => "just now".into(),
+        60..3600 => format!("{} min ago", s / 60),
+        3600..86_400 => format!("{} h ago", s / 3600),
+        _ => format!("{} days ago", s / 86_400),
+    }
+}
+
 fn describe() -> Value {
     let s = current();
     let (state, host) = daemon_status();
@@ -66,30 +229,7 @@ fn describe() -> Value {
         vault.push(json!({"kind": "button", "key": "sync", "title": "Sync now", "desc": "Fetch changes from the server.", "label": "Sync", "refresh": true}));
     }
     vault.push(json!({"kind": "button", "key": "open", "title": "Open Passwords", "label": "Open"}));
-    let minutes = &[
-        (1, "1 minute"),
-        (5, "5 minutes"),
-        (15, "15 minutes"),
-        (30, "30 minutes"),
-        (60, "1 hour"),
-        (240, "4 hours"),
-        (0, "Never"),
-    ];
-    let seconds = &[
-        (10, "After 10 seconds"),
-        (20, "After 20 seconds"),
-        (30, "After 30 seconds"),
-        (60, "After 1 minute"),
-        (120, "After 2 minutes"),
-        (0, "Never"),
-    ];
-    let syncs = &[
-        (5, "Every 5 minutes"),
-        (15, "Every 15 minutes"),
-        (30, "Every 30 minutes"),
-        (60, "Every hour"),
-        (0, "Only when unlocking"),
-    ];
+    let (minutes, seconds, syncs) = (LOCK_AFTER, CLEAR_AFTER, SYNC_EVERY);
     json!({
         "poll": 10,
         "groups": [

@@ -11,12 +11,12 @@ use std::fs;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::crypto::Kdf;
-use crate::model::{Cipher, Folder, Sync};
+use crate::model::{Cipher, Folder, Kind, Sync};
 
 const SCHEMA: i64 = 1;
 
@@ -350,6 +350,52 @@ impl Store {
     }
 }
 
+/// What the local copy holds, counted from what's stored in the clear (item types,
+/// trash dates, how many passkeys a login has): nothing is decrypted.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Summary {
+    /// Seconds since the epoch.
+    pub last_sync: Option<u64>,
+    /// Logins not in the trash.
+    pub logins: usize,
+    /// Passkeys on those logins.
+    pub passkeys: usize,
+    /// The paired browsers' names, each once.
+    pub browsers: Vec<String>,
+}
+
+/// Reads the vault at `path` without writing to it (the daemon owns it); `None` when
+/// there's no vault there or no account in it.
+pub fn summary(path: &Path) -> Option<Summary> {
+    let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()?;
+    let account: String = db.query_row("SELECT json FROM account WHERE id = 1", [], |r| r.get(0)).ok()?;
+    let account: Account = serde_json::from_str(&account).ok()?;
+    let mut summary = Summary { last_sync: account.last_sync, ..Default::default() };
+    let mut q = db.prepare("SELECT json FROM object WHERE kind = 'cipher'").ok()?;
+    for json in q.query_map([], |r| r.get::<_, String>(0)).ok()?.flatten() {
+        let Ok(c) = serde_json::from_str::<Cipher>(&json) else { continue };
+        if c.kind() != Kind::Login || c.is_deleted() {
+            continue;
+        }
+        summary.logins += 1;
+        summary.passkeys += c
+            .login
+            .as_ref()
+            .and_then(|l| l.extra.get("fido2Credentials"))
+            .and_then(serde_json::Value::as_array)
+            .map_or(0, Vec::len);
+    }
+    let mut q = db.prepare("SELECT json FROM pairing ORDER BY id").ok()?;
+    for json in q.query_map([], |r| r.get::<_, String>(0)).ok()?.flatten() {
+        if let Ok(p) = serde_json::from_str::<Pairing>(&json)
+            && !summary.browsers.contains(&p.browser)
+        {
+            summary.browsers.push(p.browser);
+        }
+    }
+    Some(summary)
+}
+
 fn to_json<T: Serialize>(value: &T) -> Result<String> {
     serde_json::to_string(value).map_err(|_| StoreError::Write)
 }
@@ -484,6 +530,40 @@ mod tests {
         store.put_pairing(&p).unwrap();
         store.clear().unwrap();
         assert!(store.pairings().unwrap().is_empty());
+    }
+
+    #[test]
+    fn summary_counts_without_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.sqlite");
+        assert_eq!(summary(&path), None);
+        assert!(!path.exists());
+        let mut store = Store::open(&path).unwrap();
+        assert_eq!(summary(&path), None);
+        store.set_account(&account()).unwrap();
+        let mut sync: Sync = serde_json::from_str(&fixture("pbkdf2-sync.json")).unwrap();
+        let logins: Vec<usize> = (0..sync.ciphers.len()).filter(|&i| sync.ciphers[i].kind() == Kind::Login).collect();
+        assert_eq!(logins.len(), 2);
+        sync.ciphers[logins[0]].login.as_mut().unwrap().extra.insert("fido2Credentials".into(), serde_json::json!([{}, {}]));
+        sync.ciphers[logins[1]].deleted_date = Some("2026-01-01T00:00:00Z".into());
+        store.replace_snapshot(&sync, account().kdf, 1_792_000_000).unwrap();
+        let pairing = |id: &str, browser: &str| Pairing {
+            id: id.into(),
+            extension: "ext@x".into(),
+            browser: browser.into(),
+            key: "2.a|b|c".into(),
+            created: 1,
+        };
+        for p in [pairing("p1", "Firefox"), pairing("p2", "Firefox"), pairing("p3", "Chromium")] {
+            store.put_pairing(&p).unwrap();
+        }
+        let want = Summary {
+            last_sync: Some(1_792_000_000),
+            logins: 1,
+            passkeys: 2,
+            browsers: vec!["Firefox".into(), "Chromium".into()],
+        };
+        assert_eq!(summary(&path), Some(want));
     }
 
     #[test]
