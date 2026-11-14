@@ -119,7 +119,9 @@ async fn connect() -> Option<zbus::Connection> {
     for attempt in 0..30 {
         if let Ok(stream) = tokio::net::UnixStream::connect(&socket).await {
             let build = zbus::connection::Builder::unix_stream(stream).p2p().build();
-            return tokio::time::timeout(Duration::from_secs(5), build).await.ok()?.ok();
+            // A daemon that just restarted on a busy machine can take seconds to answer;
+            // one that refuses the bridge closes the connection at once.
+            return tokio::time::timeout(Duration::from_secs(20), build).await.ok()?.ok();
         }
         if attempt == 0 {
             start_daemon();

@@ -433,10 +433,14 @@ impl Vault {
         st.session.is_none() && st.device_sign_in.is_none()
     }
 
-    /// Starts the daemon again on the binary an update put in place; it locks first.
-    pub fn restart_for_update(&self, scope: Scope) -> Result<()> {
+    /// Starts the daemon again on the binary an update put in place, once `replied`
+    /// finishes (the caller's reply is sent: stopping first would lose it); it locks first.
+    pub fn restart_for_update(&self, scope: Scope, replied: impl Future<Output = ()> + Send + 'static) -> Result<()> {
         need(scope, Scope::App)?;
-        super::restart();
+        tokio::spawn(async move {
+            replied.await;
+            super::restart();
+        });
         Ok(())
     }
 

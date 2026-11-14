@@ -7,6 +7,7 @@ use std::sync::Arc;
 use nyx_passwords_core::api::{TwoFactor, TwoFactorAnswer};
 use nyx_passwords_core::secret::Secret;
 use nyx_passwords_proto::{Error as Code, Item};
+use zbus::object_server::ResponseDispatchNotifier;
 use zbus::{DBusError, interface};
 
 use super::peer::Scope;
@@ -162,9 +163,11 @@ impl Service {
         super::replaced()
     }
 
-    /// Locks and starts again on the updated binary.
-    async fn restart(&self) -> Result<(), Error> {
-        Ok(self.vault.restart_for_update(self.scope)?)
+    /// Locks and starts again on the updated binary, after replying.
+    async fn restart(&self) -> Result<ResponseDispatchNotifier<()>, Error> {
+        let (reply, sent) = ResponseDispatchNotifier::new(());
+        self.vault.restart_for_update(self.scope, sent)?;
+        Ok(reply)
     }
 
     // ---- the app ----
