@@ -203,7 +203,9 @@ fn client() {
             Err(_) => return vec![json!({"connect": "refused"})],
         };
         let built = zbus::connection::Builder::unix_stream(stream).p2p().build();
-        let conn = match tokio::time::timeout(Duration::from_secs(3), built).await {
+        // Generous: a loaded build machine (Nix in a VM) can take seconds to answer, and
+        // a refused peer is cut off at once anyway.
+        let conn = match tokio::time::timeout(Duration::from_secs(20), built).await {
             Ok(Ok(c)) => c,
             _ => return vec![json!({"connect": "closed"})],
         };
