@@ -3,56 +3,29 @@
 // under them; it reports submitted logins (for the save bar) and clicks on "Sign in
 // with …" buttons, and shows the passkey card. It never sees a vault value: filling is
 // done by the background script, into this frame, after the app checked the page.
+//
+// field-kind.js (loaded first) classifies fields and walks open shadow / dialogs. Closed
+// shadow roots stay out of reach here; Nyx Browser's built-in actor can see those.
 
 (() => {
   const api = globalThis.browser ?? globalThis.chrome;
   if (globalThis.__nyxPasswords) return;
   globalThis.__nyxPasswords = true;
 
-  const visible = (el) => {
-    const r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0 && el.checkVisibility?.({ visibilityProperty: true }) !== false && !el.disabled && !el.readOnly;
-  };
+  const {
+    kindOf,
+    visible,
+    textLike,
+    describe,
+    deepInputs,
+    scopeOf,
+    topLayerOf,
+    signInStep,
+    eventTarget,
+    USERNAME_WORDS,
+  } = globalThis.NyxFieldKind;
+
   const shown = (el) => el.getClientRects().length > 0;
-  const textLike = (el) => ["text", "email", "tel"].includes(el.type);
-  const text = (el) => `${el.name} ${el.id} ${el.placeholder ?? ""} ${el.getAttribute("aria-label") ?? ""} ${el.autocomplete ?? ""}`.toLowerCase();
-
-  // A form with one or two fields and a Next or Sign in button: a sign-in's first step,
-  // not a newsletter box.
-  function signInStep(form) {
-    if (!form) return false;
-    const fields = [...form.querySelectorAll("input")].filter((i) => visible(i) && !["hidden", "checkbox", "radio", "submit", "button", "search"].includes(i.type));
-    if (!fields.length || fields.length > 2) return false;
-    const labels = [...form.querySelectorAll('button, input[type="submit"], [role="button"]')]
-      .map((b) => `${b.textContent} ${b.value ?? ""} ${b.getAttribute("aria-label") ?? ""}`)
-      .join(" ");
-    return /next|continue|sign.?in|log.?in/i.test(labels) && !/subscribe|newsletter|join|sign.?up|register/i.test(labels);
-  }
-
-  /// What a field is for, or null.
-  function kindOf(el) {
-    if (!(el instanceof HTMLInputElement) || !visible(el)) return null;
-    const ac = (el.autocomplete || "").toLowerCase();
-    const t = text(el);
-    if (ac.includes("one-time-code") || /(^|[^a-z])(otp|totp|2fa|mfa)|one.?time|verification.?code|auth.?code/.test(t)) return "otp";
-    if (ac.startsWith("cc-") || /card.?number|cc.?num|cvc|cvv|csc|card.?holder|expir/.test(t)) return "card";
-    if (el.type === "password") {
-      const passwords = [...(el.form ?? document).querySelectorAll('input[type="password"]')].filter(visible);
-      return ac.includes("new-password") || passwords.length > 1 || /new|confirm|repeat|create/.test(t) ? "new-password" : "login";
-    }
-    if (textLike(el)) {
-      if (ac.includes("username")) return "login";
-      if (/email/.test(ac) || /user|login|e.?mail|account/.test(t)) {
-        // A username with a password near it, or a sign-in's first step.
-        const password = [...(el.form ?? document).querySelectorAll('input[type="password"]')].some(visible);
-        if (password || signInStep(el.form)) return "login";
-      }
-      if (/given-name|family-name|street-address|address-line|postal-code|country|tel$/.test(ac) || /first.?name|last.?name|address|postal|zip|city/.test(t)) {
-        return "identity";
-      }
-    }
-    return null;
-  }
 
   // The menu opens for the person, not for the page: after a click or a key, never on a
   // field the page focused itself or one a fill just moved the cursor to.
@@ -62,16 +35,6 @@
   }
   const byUser = () => Date.now() - lastInput < 1000;
   const filling = () => Date.now() - (globalThis.__nyxFilling ?? 0) < 600;
-
-  // A modal dialog or popover is drawn above everything else (and the rest of the page
-  // can't be clicked), so the menu and cards go inside it.
-  function topLayer(el) {
-    try {
-      return (el ? el.closest("dialog:modal, :popover-open") : [...document.querySelectorAll("dialog:modal, :popover-open")].pop()) ?? null;
-    } catch {
-      return null;
-    }
-  }
 
   // ---- the menu under a field ----
 
@@ -117,9 +80,10 @@
     frame.style.cssText = "border:0;width:100%;height:220px;border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.3),0 1px 3px rgba(0,0,0,.2);background:transparent;color-scheme:normal;";
     frame.setAttribute("allowtransparency", "true");
     shadow.append(frame);
-    (topLayer(el) ?? document.documentElement).append(host);
+    // Modal dialogs / popovers are the top layer; the menu must live inside them.
+    (topLayerOf(el) ?? document.documentElement).append(host);
     anchor = el;
-    // The fills in background.js keep to this field's form.
+    // The fills in background.js keep to this field's form or dialog.
     globalThis.__nyxAnchor = el;
     place();
   }
@@ -128,17 +92,18 @@
     "focusin",
     (e) => {
       clearTimeout(closing);
-      if (e.target === host) return;
-      const field = kindOf(e.target);
-      if (field && byUser() && !filling()) openMenu(e.target, field);
-      else if (e.target !== anchor) closeMenu();
+      const el = eventTarget(e);
+      if (el === host || host?.contains?.(el)) return;
+      const field = kindOf(el);
+      if (field && byUser() && !filling()) openMenu(el, field);
+      else if (el !== anchor) closeMenu();
     },
     true,
   );
   document.addEventListener(
     "focusout",
     (e) => {
-      if (e.target === anchor) closing = setTimeout(() => document.activeElement !== host && closeMenu(), 250);
+      if (eventTarget(e) === anchor) closing = setTimeout(() => document.activeElement !== host && closeMenu(), 250);
     },
     true,
   );
@@ -147,9 +112,10 @@
   document.addEventListener(
     "click",
     (e) => {
-      if (!e.isTrusted || e.target === anchor || e.target !== document.activeElement) return;
-      const field = kindOf(e.target);
-      if (field) openMenu(e.target, field);
+      const el = eventTarget(e);
+      if (!e.isTrusted || el === anchor || el !== document.activeElement) return;
+      const field = kindOf(el);
+      if (field) openMenu(el, field);
     },
     true,
   );
@@ -171,7 +137,7 @@
     barFrame.src = api.runtime.getURL(`bar.html#${t}`);
     barFrame.style.cssText = "border:0;width:400px;height:152px;border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.3),0 1px 3px rgba(0,0,0,.2);background:transparent;";
     shadow.append(barFrame);
-    (topLayer() ?? document.documentElement).append(bar);
+    (topLayerOf(document.activeElement) ?? document.documentElement).append(bar);
     const mine = bar;
     setTimeout(() => {
       if (bar !== mine) return;
@@ -213,11 +179,11 @@
     shadow.append(cardFrame);
     card.style.cssText = CARD_CSS;
     cardStyle = card.style.cssText;
-    (topLayer() ?? document.documentElement).append(card);
+    (topLayerOf(document.activeElement) ?? document.documentElement).append(card);
     cardKeeper = new MutationObserver(() => {
       if (!card) return;
       if (card.style.cssText !== cardStyle) card.style.cssText = CARD_CSS;
-      if (!card.isConnected) (topLayer() ?? document.documentElement).append(card);
+      if (!card.isConnected) (topLayerOf(document.activeElement) ?? document.documentElement).append(card);
     });
     cardKeeper.observe(card, { attributes: true });
     cardKeeper.observe(document.documentElement, { childList: true, subtree: true });
@@ -270,7 +236,7 @@
   // script, which asks the app whether it's new or changed before offering to save.
   function capture(form) {
     const scope = form ?? document;
-    const fields = [...scope.querySelectorAll("input")].filter(shown);
+    const fields = deepInputs(scope).filter(shown);
     const passwords = fields.filter((el) => el.type === "password" && el.value);
     if (!passwords.length) return captureUsernameStep(form, fields);
     // A change-password form: current, then new (and confirm). A sign-up's two are the same.
@@ -283,7 +249,7 @@
     const user =
       before.find((el) => /username|email/.test(el.autocomplete) && el.value) ??
       before.find((el) => textLike(el) && el.value) ??
-      [...scope.querySelectorAll('input[autocomplete~="username"]')].find((el) => el.type !== "password" && el.value);
+      deepInputs(scope).find((el) => /\busername\b/.test(el.autocomplete) && el.type !== "password" && el.value);
     api.runtime
       .sendMessage({ cmd: "submitted", username: user?.value ?? "", password: chosen.value, current: current?.value ?? "", change: Boolean(current) })
       .catch(() => {});
@@ -294,7 +260,7 @@
     if (!form || !signInStep(form)) return;
     const user =
       fields.find((el) => /username|email/.test(el.autocomplete) && el.value) ??
-      fields.find((el) => textLike(el) && el.value && /user|login|e.?mail|account/.test(text(el)));
+      fields.find((el) => textLike(el) && el.value && USERNAME_WORDS.test(describe(el)));
     if (user) api.runtime.sendMessage({ cmd: "username-step", username: user.value }).catch(() => {});
   }
 
@@ -303,15 +269,17 @@
   document.addEventListener(
     "keydown",
     (e) => {
-      if (e.key !== "Enter" || !(e.target instanceof HTMLInputElement)) return;
-      if (e.target.type === "password" || kindOf(e.target) === "login") capture(e.target.form);
+      const el = eventTarget(e);
+      if (e.key !== "Enter" || !(el instanceof HTMLInputElement)) return;
+      if (el.type === "password" || kindOf(el) === "login") capture(el.form ?? scopeOf(el));
     },
     true,
   );
   document.addEventListener(
     "click",
     (e) => {
-      const button = e.target.closest?.('a, button, input[type="submit"], [role="button"]');
+      const el = eventTarget(e);
+      const button = el.closest?.('a, button, input[type="submit"], [role="button"]');
       if (!button) return;
       const label = `${button.textContent} ${button.value ?? ""} ${button.getAttribute("aria-label") ?? ""}`;
       if (button.tagName !== "A" && /log.?in|sign.?(in|up)|register|create|continue|next|submit|save/i.test(label)) {
@@ -344,7 +312,7 @@
   let askedFor = "";
   function maybeFillOnLoad() {
     if (askedFor === location.href) return;
-    const password = [...document.querySelectorAll('input[type="password"]')].find(visible);
+    const password = deepInputs(document).find((el) => el.type === "password" && visible(el));
     if (!password || kindOf(password) !== "login") return;
     askedFor = location.href;
     api.runtime.sendMessage({ cmd: "loaded" }).catch(() => {});

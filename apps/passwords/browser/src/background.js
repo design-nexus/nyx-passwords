@@ -177,28 +177,31 @@ async function inFrame(tabId, frameId, func, args) {
   return result?.result;
 }
 
-// These run in the page, in the content script's world (they share its globals). Each
-// fills only if the frame is still the one asked about, and only visible fields. They
-// set `__nyxFilling` so content.js doesn't open its menu on the focus they move, and
-// keep to the form of `__nyxAnchor` (the field the menu was opened under) when there is
-// one. Each is sent on its own, so each brings its own helpers.
+// These run in the page, in the content script's world (they share its globals, including
+// NyxFieldKind from field-kind.js). Each fills only if the frame is still the one asked
+// about, and only writable fields. They set `__nyxFilling` so content.js doesn't open its
+// menu on the focus they move, and keep to the form or dialog of `__nyxAnchor` when there
+// is one. Each is sent on its own, so each brings its own helpers.
 
 function fillLogin(origin, username, password, onLoad) {
   if (location.origin !== origin) return false;
   globalThis.__nyxFilling = Date.now();
-  const visible = (el) => {
-    const r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0 && el.checkVisibility?.({ visibilityProperty: true }) !== false && !el.disabled && !el.readOnly;
-  };
-  const textLike = (el) => ["text", "email", "tel"].includes(el.type);
-  const all = [...document.querySelectorAll("input")].filter(visible);
+  const { deepInputs, scopeOf, textLike, visible, USERNAME_WORDS, describe } = globalThis.NyxFieldKind;
+  const writable = (el) => visible(el) && !el.readOnly;
+  const all = deepInputs(document).filter(writable);
   const anchor = globalThis.__nyxAnchor?.isConnected ? globalThis.__nyxAnchor : document.activeElement;
-  const inForm = anchor?.form ? all.filter((el) => el.form === anchor.form) : [];
-  const fields = inForm.some((el) => el.type === "password" || textLike(el)) ? inForm : all;
+  let fields = all;
+  if (anchor?.localName === "input") {
+    const scope = scopeOf(anchor);
+    if (scope !== document) {
+      const inScope = deepInputs(scope).filter(writable);
+      if (inScope.some((el) => el.type === "password" || textLike(el))) fields = inScope;
+    }
+  }
   const passwordField = fields.find((el) => el.type === "password" && el.autocomplete !== "new-password") ?? fields.find((el) => el.type === "password");
   // With a password field, the username is the nearest field before it; without one (a
   // sign-in's first step), the first field that looks like a username.
-  const named = (el) => /user|login|e.?mail|account/i.test(`${el.name} ${el.id}`);
+  const named = (el) => USERNAME_WORDS.test(describe(el));
   const before = passwordField ? fields.slice(0, fields.indexOf(passwordField)).reverse() : [];
   const userField = passwordField
     ? before.find((el) => /username|email/.test(el.autocomplete)) ?? before.find(textLike)
@@ -209,7 +212,7 @@ function fillLogin(origin, username, password, onLoad) {
   // As the page loads, the cursor stays where it is, and a field the user is in or
   // already typed in is left alone.
   const set = (el, value) => {
-    if (!el || !value) return false;
+    if (!el || !value || el.readOnly) return false;
     if (onLoad && (el.value || el === document.activeElement)) return false;
     if (!onLoad) el.focus();
     setter.call(el, value);
@@ -226,14 +229,18 @@ function fillLogin(origin, username, password, onLoad) {
 function fillNew(origin, password) {
   if (location.origin !== origin) return 0;
   globalThis.__nyxFilling = Date.now();
-  const visible = (el) => {
-    const r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0 && el.checkVisibility?.({ visibilityProperty: true }) !== false && !el.disabled && !el.readOnly;
-  };
-  const all = [...document.querySelectorAll('input[type="password"]')].filter(visible);
+  const { deepInputs, scopeOf, textLike, visible } = globalThis.NyxFieldKind;
+  const writable = (el) => visible(el) && !el.readOnly;
+  const all = deepInputs(document).filter((el) => writable(el) && el.type === "password");
   const anchor = globalThis.__nyxAnchor?.isConnected ? globalThis.__nyxAnchor : document.activeElement;
-  const inForm = anchor?.form ? all.filter((el) => el.form === anchor.form) : [];
-  const fields = inForm.length ? inForm : all;
+  let fields = all;
+  if (anchor?.localName === "input") {
+    const scope = scopeOf(anchor);
+    if (scope !== document) {
+      const inScope = deepInputs(scope).filter((el) => writable(el) && el.type === "password");
+      if (inScope.length) fields = inScope;
+    }
+  }
   const current = (el) => el.autocomplete === "current-password" || /current|old/i.test(`${el.name} ${el.id}`);
   let targets = fields.filter((el) => !current(el));
   const marked = targets.filter((el) => el.autocomplete === "new-password");
@@ -254,22 +261,26 @@ function fillNew(origin, password) {
 function fillUsername(origin, value) {
   if (location.origin !== origin) return false;
   globalThis.__nyxFilling = Date.now();
-  const visible = (el) => {
-    const r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0 && el.checkVisibility?.({ visibilityProperty: true }) !== false && !el.disabled && !el.readOnly;
-  };
-  const textLike = (el) => ["text", "email", "tel"].includes(el.type);
-  const all = [...document.querySelectorAll("input")].filter(visible);
+  const { deepInputs, scopeOf, textLike, visible, USERNAME_WORDS, describe } = globalThis.NyxFieldKind;
+  const writable = (el) => visible(el) && !el.readOnly;
+  const all = deepInputs(document).filter(writable);
   const anchor = globalThis.__nyxAnchor?.isConnected ? globalThis.__nyxAnchor : document.activeElement;
-  const fields = anchor?.form ? all.filter((el) => el.form === anchor.form) : all;
+  let fields = all;
+  if (anchor?.localName === "input") {
+    const scope = scopeOf(anchor);
+    if (scope !== document) {
+      const inScope = deepInputs(scope).filter(writable);
+      if (inScope.some((el) => el.type === "password" || textLike(el))) fields = inScope;
+    }
+  }
   const password = fields.findIndex((el) => el.type === "password");
   const before = password < 0 ? fields : fields.slice(0, password);
   const field =
     (textLike(anchor) && fields.includes(anchor) ? anchor : null) ??
     before.find((el) => /username|email/.test(el.autocomplete)) ??
-    before.find((el) => textLike(el) && /user|login|e.?mail|account/i.test(`${el.name} ${el.id}`)) ??
+    before.find((el) => textLike(el) && USERNAME_WORDS.test(describe(el))) ??
     before.findLast(textLike);
-  if (!field) return false;
+  if (!field || field.readOnly) return false;
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
   field.focus();
   setter.call(field, value);
@@ -282,17 +293,15 @@ function fillUsername(origin, value) {
 function fillCode(origin, code) {
   if (location.origin !== origin) return false;
   globalThis.__nyxFilling = Date.now();
+  const { deepInputs, visible } = globalThis.NyxFieldKind;
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
   const set = (el, v) => {
+    if (!el || el.readOnly) return;
     setter.call(el, v);
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
   };
-  const visible = (el) => {
-    const r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0 && el.checkVisibility?.({ visibilityProperty: true }) !== false && !el.disabled;
-  };
-  const inputs = [...document.querySelectorAll("input")].filter(visible);
+  const inputs = deepInputs(document).filter(visible);
   const boxes = inputs.filter((el) => el.maxLength === 1);
   if (boxes.length >= code.length) {
     code.split("").forEach((c, i) => set(boxes[i], c));
@@ -310,12 +319,13 @@ function fillCode(origin, code) {
 function fillForm(origin, kind, values) {
   if (location.origin !== origin) return 0;
   globalThis.__nyxFilling = Date.now();
+  const { deepInputs, visible, scopeOf } = globalThis.NyxFieldKind;
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
   const map =
     kind === "card"
       ? [
           ["cc-name", /card.?holder|name.?on.?card|cc.?name/i, values.cardholderName],
-          ["cc-number", /card.?number|cc.?num|cardnum/i, values.number],
+          ["cc-number", /card.?number|cc.?num|cardnum|(?:^|[^a-z])pan(?:[^a-z]|$)|card.?no/i, values.number],
           ["cc-exp-month", /exp.*month|month/i, values.expMonth],
           ["cc-exp-year", /exp.*year|year/i, values.expYear],
           ["cc-exp", /expir|exp.?date|mm.?yy/i, values.expMonth && values.expYear ? `${values.expMonth.padStart(2, "0")}/${values.expYear.slice(-2)}` : ""],
@@ -336,11 +346,10 @@ function fillForm(origin, kind, values) {
           ["country", /country/i, values.country],
           ["username", /user.?name/i, values.username],
         ];
-  const visible = (el) => {
-    const r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0 && el.checkVisibility?.({ visibilityProperty: true }) !== false && !el.disabled;
-  };
-  const inputs = [...document.querySelectorAll("input, select")].filter(visible);
+  const anchor = globalThis.__nyxAnchor?.isConnected ? globalThis.__nyxAnchor : document.activeElement;
+  const scope = anchor?.localName === "input" ? scopeOf(anchor) : document;
+  const rooted = scope === document ? document : scope;
+  const inputs = [...deepInputs(rooted), ...rooted.querySelectorAll?.("select") ?? []].filter(visible);
   let n = 0;
   for (const [token, pattern, value] of map) {
     if (!value) continue;
@@ -348,7 +357,7 @@ function fillForm(origin, kind, values) {
       inputs.find((i) => (i.autocomplete || "").split(" ").includes(token)) ??
       inputs.find((i) => !i.autocomplete && pattern.test(`${i.name} ${i.id} ${i.placeholder ?? ""} ${i.getAttribute("aria-label") ?? ""}`));
     // A dropdown always has a value (its first option), so only text fields count as typed in.
-    if (!el || (el.tagName !== "SELECT" && el.value)) continue;
+    if (!el || el.readOnly || (el.tagName !== "SELECT" && el.value)) continue;
     if (el.tagName === "SELECT") {
       const option = [...el.options].find((o) => o.value === value || o.text.trim() === value || o.value === value.padStart(2, "0"));
       if (!option) continue;
@@ -379,25 +388,28 @@ function clickProvider(origin, provider) {
 }
 
 function readForm() {
-  const fields = [...document.querySelectorAll("input")].filter((el) => el.getClientRects().length > 0);
+  const inputs = globalThis.NyxFieldKind?.deepInputs?.(document) ?? [...document.querySelectorAll("input")];
+  const fields = inputs.filter((el) => el.getClientRects().length > 0);
   const passwordField = fields.find((el) => el.type === "password" && el.value);
   if (!passwordField) return null;
   const nearestFirst = fields.slice(0, fields.indexOf(passwordField)).reverse();
   const userField =
     nearestFirst.find((el) => /username|email/.test(el.autocomplete) && el.value) ??
-    nearestFirst.find((el) => ["text", "email", "tel"].includes(el.type) && el.value);
+    nearestFirst.find((el) => ["text", "email", "tel", "number"].includes(el.type) && el.value);
   return { username: userField?.value ?? "", password: passwordField.value, url: location.href };
 }
 
 // Whether this frame shows a login (or new-password) form: its address, or null.
 function loginFormHere() {
   const shown = (el) => el.getClientRects().length > 0 && !el.disabled;
-  const found = [...document.querySelectorAll("input")].some((el) => shown(el) && (el.type === "password" || /username/.test(el.autocomplete)));
+  const inputs = globalThis.NyxFieldKind?.deepInputs?.(document) ?? [...document.querySelectorAll("input")];
+  const found = inputs.some((el) => shown(el) && (el.type === "password" || /username/.test(el.autocomplete)));
   return found ? location.href : null;
 }
 
 function passwordFieldShown() {
-  return [...document.querySelectorAll('input[type="password"]')].some((el) => el.getClientRects().length > 0 && !el.disabled);
+  const inputs = globalThis.NyxFieldKind?.deepInputs?.(document) ?? [...document.querySelectorAll("input")];
+  return inputs.some((el) => el.type === "password" && el.getClientRects().length > 0 && !el.disabled);
 }
 
 /// The frame of a tab that has a login form, the top one first (its id and address).
