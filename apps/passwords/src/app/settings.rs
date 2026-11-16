@@ -665,7 +665,19 @@ pub fn open(ui: &Ui) {
     let g = group(&body, "Vault");
     let account = ui.listing.borrow().account.clone();
     if !account.email.is_empty() {
-        g.append(&w::row(&account.email, &glib::markup_escape_text(&account.server), None));
+        // Signing out was only on the unlock card, so an open vault had to be locked first.
+        let u = ui.clone();
+        let sign_out = w::two_click("Sign out", "Click again to sign out", move || {
+            let u = u.clone();
+            glib::spawn_future_local(async move {
+                let _ = client::call("SignOut", None).await;
+                nyx_ui::settings_card::close();
+                ui::set_state(&u, nyx_passwords_proto::state::LOGGED_OUT);
+            });
+        });
+        sign_out.set_tooltip_text(Some("Remove this account and its local copy from this device"));
+        sign_out.set_valign(gtk::Align::Center);
+        g.append(&w::row(&account.email, &glib::markup_escape_text(&account.server), Some(sign_out.upcast_ref())));
     }
     choice(
         &g,
