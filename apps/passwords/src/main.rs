@@ -16,7 +16,7 @@ fn main() -> glib::ExitCode {
     }
     if std::env::var_os("GSK_RENDERER").is_none() {
         // SAFETY: set before any thread starts.
-        unsafe { std::env::set_var("GSK_RENDERER", "ngl") };
+        unsafe { std::env::set_var("GSK_RENDERER", "gl") };
     }
     // NYX_PASSWORDS_APP_ID runs a test copy beside the real one (its own window class).
     // Dialogs are windows outside the application and take their class from the program
