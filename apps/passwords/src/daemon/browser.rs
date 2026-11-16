@@ -614,8 +614,12 @@ fn handle(st: &mut State, pairing: &str, browser: &(i32, String), request: &Valu
             json!({})
         }
         // Shows an item in the Passwords window: for what stays in the app (an SSH key's
-        // private half, notes).
+        // private half, notes). Without one, just the window.
         Some("open") => {
+            if request["id"].is_null() {
+                launch_app(&[]);
+                return json!({});
+            }
             let Some(id) = request["id"].as_str().and_then(|i| parse_id(i).ok()) else { return error(Code::NotFound) };
             if !st.session.as_ref().is_some_and(|s| s.view.get(id).is_some_and(|e| !e.deleted)) {
                 return error(Code::NotFound);

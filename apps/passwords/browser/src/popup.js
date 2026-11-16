@@ -212,6 +212,7 @@ async function openVault() {
       refresh();
     }),
     action("settings", "Settings", () => select("settings"), "act-settings"),
+    el("button", { class: "ghost app-link", title: "Open the Passwords window", onclick: () => ask({ cmd: "open" }).then(() => window.close()) }, "Open Passwords", icon("external", 14)),
   );
   site = await ask({ cmd: "match" });
   site.items ??= [];
@@ -240,11 +241,9 @@ function matchesFilter(item) {
 
 function renderList() {
   rows = [];
-  const filters = el("div", { class: "segmented" });
-  for (const [k, label, name] of [["all", "All"], ["login", "Logins", "login"], ["card", "Cards", "card"], ["identity", "Identities", "identity"], ["note", "Notes", "note"]]) {
-    filters.append(
-      el("button", { class: filter === k ? "on" : "", title: label, onclick: () => { filter = k; renderList(); } }, name ? icon(name, 15) : label),
-    );
+  const filters = el("div", { class: "kinds" });
+  for (const [k, label] of [["all", "All"], ["login", "Logins"], ["card", "Cards"], ["identity", "Identities"], ["note", "Notes"]]) {
+    filters.append(el("button", { class: `kind${filter === k ? " on" : ""}`, onclick: () => { filter = k; renderList(); } }, label));
   }
   const parts = [el("div", { class: "filters" }, filters)];
   const query = search.value.trim();
@@ -263,6 +262,7 @@ function renderList() {
     const shown = results.filter(matchesFilter);
     parts.push(el("div", { class: "group-label" }, shown.length ? `${shown.length} found` : "Nothing found"));
     parts.push(...shown.map((i) => row(i)));
+    parts.push(el("div", { class: "keys" }, el("kbd", {}, "↑"), el("kbd", {}, "↓"), " choose · ", el("kbd", {}, "Enter"), " fill · ", el("kbd", {}, "Esc"), " clear"));
   }
   list.replaceChildren(...parts);
   markSelected();
@@ -392,13 +392,13 @@ function itemView(item, { confirmFill = false } = {}) {
     el(
       "div",
       { class: "head" },
-      tile(item, 44),
+      tile(item, 40),
       el("div", { class: "text" }, el("div", { class: "name" }, item.name), el("div", { class: "sub" }, `${KINDS[kind] ?? "Item"}${hostLine}`)),
       item.favorite ? el("span", { class: "star", title: "Favorite" }, icon("star")) : null,
     ),
   );
 
-  const bar = el("div", { class: "bar" });
+  const bar = el("div", { class: "bar wide" });
   if (kind === "login" && (item.has_password || item.username || item.sign_in_with)) {
     const via = here?.sign_in_with && !here.has_password ? PROVIDERS[here.sign_in_with] ?? here.sign_in_with : null;
     bar.append(
@@ -701,7 +701,6 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-$("brand").append(icon("key", 16));
 $("search-icon").append(icon("search", 15));
 if (location.hash === "#welcome") {
   document.body.classList.add("welcome");

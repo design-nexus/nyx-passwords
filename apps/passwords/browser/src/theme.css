@@ -134,6 +134,8 @@ input:focus { outline: 2px solid color-mix(in srgb, var(--accent) 60%, transpare
   flex: none;
   width: var(--size);
   height: var(--size);
+  min-height: var(--size);
+  aspect-ratio: 1;
   border-radius: calc(var(--size) * 0.28);
   display: inline-flex;
   align-items: center;
