@@ -496,6 +496,10 @@ pub fn set_state(ui: &Ui, st: &str) {
     ui.sidebar.set_visible(open);
     ui.collapse.set_visible(open);
     ui.search.set_visible(open);
+    // With its Ctrl F hint, which sits over it in an overlay of its own.
+    if let Some(search_box) = ui.search.parent() {
+        search_box.set_visible(open);
+    }
     ui.lock_button.set_visible(open);
     ui.sync_button.set_visible(open);
     ui.new_button.set_visible(open);
