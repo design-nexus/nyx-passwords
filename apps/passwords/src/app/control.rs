@@ -44,7 +44,12 @@ fn handle(app: &gtk::Application, action: &str, answer: Answer) {
     match action {
         "passwords.status" => {
             glib::spawn_future_local(async move {
-                answer(client::status().await.map(|(state, _, _)| json!({ "state": state, "locked": state != "unlocked" })).map_err(failed));
+                answer(
+                    client::status()
+                        .await
+                        .map(|(state, _, _)| json!({ "state": state, "locked": state != "unlocked" }))
+                        .map_err(failed),
+                );
             });
         }
         "passwords.lock" => {

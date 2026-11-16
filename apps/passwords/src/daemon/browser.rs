@@ -326,7 +326,8 @@ impl Vault {
     /// same rules as `totp`: unlocked, the page's own site, the fill limit.
     async fn browser_notified_code(&self, pairing: &str, request: &Value) -> Value {
         let r = request["r"].as_str().unwrap_or_default();
-        let Some(url) = request["url"].as_str().and_then(|u| Url::parse(u).ok()).filter(|u| matches!(u.scheme(), "http" | "https"))
+        let Some(url) =
+            request["url"].as_str().and_then(|u| Url::parse(u).ok()).filter(|u| matches!(u.scheme(), "http" | "https"))
         else {
             return error(Code::NoUrl);
         };
@@ -363,7 +364,8 @@ impl Vault {
         let id = request["id"].as_str().unwrap_or_default();
         let confirmed = request["confirmed"] == true;
         let reply = conn.call_method(Some(BUS), PATH, Some(IFACE), "Take", &(id, url.as_str(), confirmed)).await;
-        match reply.ok().and_then(|m| m.body().deserialize::<String>().ok()).and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
+        match reply.ok().and_then(|m| m.body().deserialize::<String>().ok()).and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        {
             Some(v) if v["code"].is_string() => json!({"code": v["code"], "confidence": v["confidence"]}),
             _ => error(Code::NotFound),
         }

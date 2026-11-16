@@ -89,11 +89,28 @@ async fn screen(vault: Arc<Vault>) {
     }
 }
 
+/// Hyprland's request socket: this session's (`HYPRLAND_INSTANCE_SIGNATURE`), else the
+/// newest instance's in the runtime folder, for a daemon started before the session
+/// put its environment into systemd's (the screen lock would otherwise go unseen).
+fn hyprland_socket() -> Option<std::path::PathBuf> {
+    let runtime = std::path::PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?).join("hypr");
+    if let Some(sig) = std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE") {
+        let p = runtime.join(sig).join(".socket.sock");
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    std::fs::read_dir(&runtime)
+        .ok()?
+        .flatten()
+        .map(|e| e.path().join(".socket.sock"))
+        .filter(|p| p.exists())
+        .max_by_key(|p| p.parent().and_then(|d| d.metadata().ok()).and_then(|m| m.modified().ok()))
+}
+
 /// A JSON request to Hyprland's socket (`j/monitors`, …); `None` outside Hyprland.
 async fn hyprland(request: &str) -> Option<serde_json::Value> {
-    let runtime = std::env::var("XDG_RUNTIME_DIR").ok()?;
-    let signature = std::env::var("HYPRLAND_INSTANCE_SIGNATURE").ok()?;
-    let path = format!("{runtime}/hypr/{signature}/.socket.sock");
+    let path = hyprland_socket()?;
     let ask = async {
         let mut sock = tokio::net::UnixStream::connect(&path).await.ok()?;
         sock.write_all(request.as_bytes()).await.ok()?;
