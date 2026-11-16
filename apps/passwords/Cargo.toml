@@ -16,7 +16,7 @@ nyx-theme = { git = "https://github.com/design-nexus/nyx-design.git", rev = "ea8
 nyx-ui = { git = "https://github.com/design-nexus/nyx-design.git", rev = "ea8839d237a23ec83887429475f0780c06a36826" }
 gtk = { version = "0.11", package = "gtk4", features = ["v4_18"] }
 nyx-passwords-core = { path = "../../crates/nyx-passwords-core" }
-nyx-auth-proto = { git = "https://github.com/design-nexus/nyx-biometrics.git", rev = "ceb41b26602e2548da18a1ab408e81efe8c8a279", features = ["client"] }
+nyx-auth-proto = { git = "https://github.com/design-nexus/nyx-biometrics.git", rev = "03117ea1ab7d2cc1a6a8b07905c7c4eb02ae1861", features = ["client"] }
 sha2 = "0.11"
 nyx-passwords-proto = { path = "../../crates/nyx-passwords-proto", features = ["client"] }
 base64 = "0.22"
