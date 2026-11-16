@@ -1058,8 +1058,17 @@ api.commands.onCommand.addListener(async (command) => {
 });
 
 api.runtime.onInstalled.addListener((details) => {
-  // First install: a tab to pair this browser with Passwords.
-  if (details.reason === "install") api.tabs.create({ url: own("popup.html#welcome") });
+  // First install: a tab to pair this browser with Passwords. Not in Nyx Browser, which
+  // ships the extension built in: a tab of its own address on its first start, before
+  // anything was asked for; the toolbar button pairs it there.
+  if (details.reason === "install") {
+    const info = typeof api.runtime.getBrowserInfo === "function" ? api.runtime.getBrowserInfo() : Promise.resolve({});
+    info
+      .catch(() => ({}))
+      .then((b) => {
+        if (b.name !== "Nyx-Browser") api.tabs.create({ url: own("popup.html#welcome") });
+      });
+  }
   api.contextMenus.removeAll(() => {
     api.contextMenus.create({ id: "nyx-fill", title: "Fill the login for this page", contexts: ["editable", "page"] });
     api.contextMenus.create({ id: "nyx-generate", title: "Generate a password here", contexts: ["editable"] });
