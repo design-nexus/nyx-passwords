@@ -9,14 +9,14 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
-nyx-core = { git = "https://github.com/design-nexus/nyx-core.git", rev = "94e0c8aa133074c74adb31365e51f56168114f68" }
-nyx-actions = { git = "https://github.com/design-nexus/nyx-core.git", rev = "94e0c8aa133074c74adb31365e51f56168114f68", default-features = false }
-nyx-peer = { git = "https://github.com/design-nexus/nyx-core.git", rev = "94e0c8aa133074c74adb31365e51f56168114f68" }
-nyx-theme = { git = "https://github.com/design-nexus/nyx-design.git", rev = "ea8839d237a23ec83887429475f0780c06a36826" }
-nyx-ui = { git = "https://github.com/design-nexus/nyx-design.git", rev = "ea8839d237a23ec83887429475f0780c06a36826" }
+nyx-core = { git = "https://github.com/design-nexus/nyx-core.git", rev = "a258c315f056ac649586fdb55e98613056221411" }
+nyx-actions = { git = "https://github.com/design-nexus/nyx-core.git", rev = "a258c315f056ac649586fdb55e98613056221411", default-features = false }
+nyx-peer = { git = "https://github.com/design-nexus/nyx-core.git", rev = "a258c315f056ac649586fdb55e98613056221411" }
+nyx-theme = { git = "https://github.com/design-nexus/nyx-design.git", rev = "914b14ec5574ca04cbb985b571cfbfb0a42aae15" }
+nyx-ui = { git = "https://github.com/design-nexus/nyx-design.git", rev = "914b14ec5574ca04cbb985b571cfbfb0a42aae15" }
 gtk = { version = "0.11", package = "gtk4", features = ["v4_18"] }
 nyx-passwords-core = { path = "../../crates/nyx-passwords-core" }
-nyx-auth-proto = { git = "https://github.com/design-nexus/nyx-biometrics.git", rev = "03117ea1ab7d2cc1a6a8b07905c7c4eb02ae1861", features = ["client"] }
+nyx-auth-proto = { git = "https://github.com/design-nexus/nyx-biometrics.git", rev = "637a5cbadf597fb888f6419d2a373ed4b04aafbb", features = ["client"] }
 sha2 = "0.11"
 nyx-passwords-proto = { path = "../../crates/nyx-passwords-proto", features = ["client"] }
 base64 = "0.22"
