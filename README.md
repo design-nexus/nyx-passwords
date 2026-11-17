@@ -60,7 +60,7 @@ passphrase can't be imported yet.
   before sleep, and with Ctrl+L.
 
 Settings live in `~/.config/nyx-passwords/settings.toml`. Details:
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/SECURITY.md](docs/SECURITY.md).
+[architecture](apps/passwords/docs/ARCHITECTURE.md), [security](apps/passwords/docs/SECURITY.md).
 
 | Shortcut | Action |
 | --- | --- |
