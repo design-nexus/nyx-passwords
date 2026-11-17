@@ -5,6 +5,8 @@ server, built with Rust, GTK 4 and the suite's shared theme and widgets. It uses
 Bitwarden client API, so the same account keeps working in the Bitwarden apps, the web
 vault and the `bw` command line.
 
+On NyxOS, choose Passwords in Welcome when you set up, or install it later from the Store or with `nyx install nyx-passwords`. On Omarchy:
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/design-nexus/nyx-passwords/main/install.sh | bash -s -- passwords
 ```
